@@ -82,8 +82,9 @@
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `wait_reason_code` | `string` | 结构化等待原因 |
-| `resume_trigger` | `string` | 之后该怎么恢复 |
-| `next_owner` | `"system" | "human" | "gog"` | 下一步主要归谁处理 |
+| `resume_trigger` | `string` | 自动恢复条件，或审计终态说明 |
+| `resolution_owner` | `"system" | "gog" | "none"` | 由系统恢复、由 `gog` 恢复，或不恢复 |
+| `resolution_mode` | `"auto_resume" | "terminal_audit"` | 自动恢复态还是审计终态 |
 | `evidence_ref` | `string` | 证据文件路径 |
 
 ### `TrajectoryPlaybook`
@@ -126,6 +127,8 @@
 | `detail` | `string` | 一句话结论 |
 | `artifact_refs` | `string[]` | takeover 相关 artifact |
 | `wait` | `WaitMetadata?` | 如需等待，挂这里 |
+| `terminal_class` | `TerminalClass?` | 当前终态或结果分类 |
+| `skip_reason_code` | `string?` | 当状态为 `SKIPPED` 时使用 |
 | `playbook` | `TrajectoryPlaybook?` | 如可复用，附带返回 |
 
 ## 状态总表
@@ -136,11 +139,11 @@
 | --- | --- |
 | `READY` | 任务已创建，还没进入本轮执行 |
 | `RUNNING` | 当前正在执行 |
-| `WAITING_EXTERNAL_EVENT` | 等外部事件，如邮箱验证 |
-| `WAITING_POLICY_DECISION` | 等人工业务决策，如付费或 CAPTCHA 处置 |
-| `WAITING_MISSING_INPUT` | 当前输入不足 |
-| `WAITING_MANUAL_AUTH` | 必须人工登录或认证 |
-| `WAITING_SITE_RESPONSE` | 已提交，等目录站审核/发布 |
+| `WAITING_EXTERNAL_EVENT` | 自动可恢复等待，如邮箱验证 |
+| `WAITING_POLICY_DECISION` | 审计终态，表示命中了付费、CAPTCHA 或其他策略边界 |
+| `WAITING_MISSING_INPUT` | 审计终态，表示当前输入集不足 |
+| `WAITING_MANUAL_AUTH` | 审计终态，表示遇到无人值守不支持的认证流程 |
+| `WAITING_SITE_RESPONSE` | 自动可恢复等待，表示已提交、待目录站审核/发布 |
 | `RETRYABLE` | 当前失败，但后续还有重试价值 |
 | `DONE` | 已完成 |
 | `SKIPPED` | 已明确跳过 |
@@ -155,6 +158,7 @@
 | `DIRECTORY_LOGIN_REQUIRED` | `WAITING_MANUAL_AUTH` | 必须先登录 |
 | `PAID_OR_SPONSORED_LISTING` | `WAITING_POLICY_DECISION` | 明显付费 / 赞助要求 |
 | `EMAIL_VERIFICATION_PENDING` | `WAITING_EXTERNAL_EVENT` | 等邮箱验证 |
+| `SITE_RESPONSE_PENDING` | `WAITING_SITE_RESPONSE` | 已提交，等待站点返回最终结果 |
 | `OUTCOME_NOT_CONFIRMED` | `RETRYABLE` | 页面没给出明确成功或失败信号 |
 | `REQUIRED_INPUT_MISSING` | `WAITING_MISSING_INPUT` | 当前输入集不够 |
 | `TAKEOVER_RUNTIME_ERROR` | `RETRYABLE` | takeover 自己崩了 |
@@ -182,6 +186,12 @@
 | `upstream_5xx` | 目录站自身不可用 |
 | `outcome_not_confirmed` | 页面没给出可确认结果 |
 | `takeover_runtime_error` | takeover 逻辑本身崩了 |
+
+## 无人值守语义提醒
+
+- `WAITING_POLICY_DECISION / WAITING_MISSING_INPUT / WAITING_MANUAL_AUTH` 仍然保留为细分 `TaskStatus`，但它们是为了审计和报表，不是为了等待人类恢复。
+- 真正会自动恢复的只有 `WAITING_EXTERNAL_EVENT` 和 `WAITING_SITE_RESPONSE`。
+- 如果代码或文档里再次出现“人工完成后继续 RUNNING”，就说明控制层已经偏回半自动模式了。
 
 ## 契约使用提醒
 

@@ -87,7 +87,7 @@ CLI
 
 - 验证 `cdp_runtime`
 - 验证 Playwright 能否连接
-- 检查 `agent-browser`
+- 检查 `browser-use CLI`
 - 检查 `gog`
 
 这一步的本质目的不是“跑业务”，而是尽早告诉你环境有没有资格开工。

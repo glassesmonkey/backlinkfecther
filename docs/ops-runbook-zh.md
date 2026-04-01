@@ -84,9 +84,9 @@ pnpm run-next -- \
 2. `playwright`
    - 是否能 `connectOverCDP(cdp_url)`
    - 是否能看到已有 page 或新建 page
-3. `agent_browser`
+3. `browser_use_cli`
    - 只是检查命令是否在 `PATH`
-   - 当前主链还没有真正调用它
+   - 当前主链还没有真正调用它，只是确认最终兜底工具存在
 4. `gog`
    - 只是检查命令是否在 `PATH`
    - 当前主链还没有把邮箱恢复做完整
@@ -94,7 +94,7 @@ pnpm run-next -- \
 注意：
 
 - `runtime.ok` 目前只取决于 `cdp_runtime.ok && playwright.ok`。
-- `agent_browser` 和 `gog` 失败不会让 `runtime.ok` 变成 false。
+- `browser_use_cli` 和 `gog` 失败不会让 `runtime.ok` 变成 false。
 
 ## `run-next` 会做什么
 
@@ -129,14 +129,17 @@ resolveBrowserRuntime
   - 设计上应该由 `gog` 自动恢复。
   - 但当前 repo 里还没有完整的自动恢复 worker。
 
-### 人工/决策类
+### 审计终态
 
 - `WAITING_POLICY_DECISION`
   - 碰到 CAPTCHA、付费、赞助、业务策略点。
+  - 这是审计终态，不会自动恢复到 `RUNNING`。
 - `WAITING_MISSING_INPUT`
   - 表单有必填字段，但当前输入集不够。
+  - 这是审计终态，不会自动恢复到 `RUNNING`。
 - `WAITING_MANUAL_AUTH`
-  - 必须先登录或认证。
+  - 遇到无人值守不支持的登录或认证。
+  - 这是审计终态，不会自动恢复到 `RUNNING`。
 - `WAITING_SITE_RESPONSE`
   - 站点已经接单，只是在等审核或发布。
 
@@ -172,7 +175,7 @@ resolveBrowserRuntime
 - 出现 CAPTCHA。
 - OAuth 弹窗、回跳、登录成功确认需要复杂状态恢复。
 
-遇到这些情况，当前运行手册建议直接转：
+遇到这些情况，当前运行手册建议直接转成审计终态：
 
 - `WAITING_MANUAL_AUTH`
 - 或 `WAITING_POLICY_DECISION`

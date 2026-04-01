@@ -1,0 +1,20 @@
+{
+  "name": "backliner-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal executable backbone for shared-CDP backlink submission workflows.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start-browser": "pnpm build && node dist/cli/index.js start-browser",
+    "preflight": "pnpm build && node dist/cli/index.js preflight",
+    "run-next": "pnpm build && node dist/cli/index.js run-next"
+  },
+  "dependencies": {
+    "playwright": "^1.54.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.13",
+    "typescript": "^5.8.3"
+  }
+}

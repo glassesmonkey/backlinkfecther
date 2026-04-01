@@ -26,7 +26,7 @@ flowchart TB
     U[操作者 / User\n提供 promoted URL、目标列表、策略边界] --> C[Control Plane\nbootstrap_runtime / init_intake / run_next / run_batch / select_execution_plan]
 
     C --> M[Memory Plane\npromoted-site profile\nsite playbook\naccount registry\nsubmission ledger]
-    C --> E[Execution Plane\nlightweight scout + providers\nlive takeover + replay]
+    C --> E[Execution Plane\nlightweight scout + browser tools\nlive takeover + replay]
     C --> O[Ops Plane\nreporter / watchdog / cron]
 
     M --> A[Artifacts & Runtime State\nmanifest\ntask store\nbrief\nplan\nexecution result\npage-understanding artifact]
@@ -74,7 +74,7 @@ flowchart LR
         SC[Lightweight Scout\nsurface + field hints]
         RP[Trajectory Replay]
         LT[Agent Live Takeover]
-        PR[Providers\nbrowser-use-cli / bb-browser / dry-run / manual]
+        PR[Browser Control Tools\nPlaywright executor\nbrowser-use-cli fallback\ndry-run]
     end
 
     subgraph ReasoningUpgrade[Reasoning Upgrade Layer]
@@ -180,9 +180,9 @@ flowchart TD
     A[创建 run\nbootstrap_runtime.py] --> B[探测 promoted site\nprobe_promoted_site.py]
     B --> C[收集 intake\ninit_intake.py]
     C --> D{required intake\n是否完整?}
-    D -- 否 --> E[标记 WAITING_CONFIG\n停止真实提交]
+    D -- 否 --> E[终止真实提交\n补齐 intake 后再创建 run]
     D -- 是 --> F[导入 targets\ntask_store.py init]
-    F --> G[运行 preflight\n确认 provider / browser / gog]
+    F --> G[运行 preflight\n确认 browser stack / gog]
     G --> H[启动 worker batch\nrun_batch.py]
     H --> I[claim 单个 task\nrun_next.py]
     I --> J[scout target]
@@ -300,7 +300,7 @@ flowchart TD
 
 ## 8. 浏览器执行架构图
 
-这个图回答：**为什么系统要把 scout、provider、takeover、replay 分层。**
+这个图回答：**为什么系统要把 scout、browser control、takeover、replay 分层。**
 
 ```mermaid
 flowchart LR
@@ -308,7 +308,7 @@ flowchart LR
     CLI --> SC[Scout Layer\nsurface summary\nfield hints\nevidence hints]
     CLI --> RP[Replay Layer\ntrajectory playbook]
     CLI --> LT[Takeover Layer\nagent live takeover]
-    SC --> PR[Provider Layer\nbrowser-use-cli\nbb-browser\ndry-run\nmanual]
+    SC --> PR[Browser Control Layer\nPlaywright executor\nbrowser-use-cli fallback\ndry-run]
     RP --> PR
     LT --> PR
 
@@ -433,11 +433,7 @@ stateDiagram-v2
     RETRYABLE --> RUNNING: claim again
     WAITING_EXTERNAL_EVENT --> RUNNING: gog / poll event resumes
     WAITING_EXTERNAL_EVENT --> RETRYABLE: timeout / transient issue
-    WAITING_EXTERNAL_EVENT --> WAITING_MANUAL_AUTH: event missing but auth still required
-    WAITING_POLICY_DECISION --> RUNNING: operator approves
-    WAITING_MISSING_INPUT --> RUNNING: input completed
-    WAITING_MANUAL_AUTH --> RUNNING: manual auth completed
-    WAITING_SITE_RESPONSE --> RUNNING: site response arrives
+    WAITING_SITE_RESPONSE --> DONE: site confirms listing / review completes
 
     RUNNING --> DONE: submitted / verified / already_listed
     RUNNING --> WAITING_EXTERNAL_EVENT: pending email / callback
@@ -538,7 +534,7 @@ flowchart TD
     C1 -- 是 --> C2[run_worker_once]
     C1 -- 否 --> C3[告警，不强推]
     C -- 否 --> D{WAITING_EXTERNAL_EVENT 超时?}
-    D -- 是 --> D1[转 RETRYABLE 或 WAITING_MANUAL_AUTH]
+    D -- 是 --> D1[转 RETRYABLE 或细分审计终态]
     D -- 否 --> E{reporter 超时 / final report 缺失?}
     E -- 是 --> E1[run_reporter_once]
     E -- 否 --> F[healthy / completed]

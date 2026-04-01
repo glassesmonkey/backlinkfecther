@@ -228,7 +228,7 @@ Web Backlinker V2
 │ Memory Plane │ │ Execution    │ │ Ops Plane    │
 │              │ │ Plane        │ │              │
 │ profile      │ │ scout        │ │ reporter     │
-│ playbook     │ │ providers    │ │ watchdog     │
+│ playbook     │ │ browser tools│ │ watchdog     │
 │ accounts     │ │ takeover     │ │ cron jobs    │
 │ ledger       │ │ replay       │ │ health check │
 └──────────────┘ └──────────────┘ └──────────────┘
@@ -286,12 +286,12 @@ Web Backlinker V2
 主要模块：
 - `packages/execution-core/src/cli.js`
 - lightweight scout（轻量侦察层）
-- providers（浏览器执行提供方）
+- browser control tools（Playwright executor + browser-use fallback）
 - live takeover loop（最终兜底接管层）
 - trajectory replay（复用层）
 
 职责：
-- 选择 provider
+- 选择执行器和 fallback 工具
 - 用低成本侦察收集 hints
 - 在必要时触发 live takeover
 - replay 成功过的 trajectory playbook
@@ -351,7 +351,8 @@ Manifest 是一轮 campaign 的控制中枢。
     "cron_job_id": "..."
   },
   "preflight": {
-    "default_provider": "browser-use-cli",
+    "browser_executor": "playwright",
+    "browser_fallback_tool": "browser-use-cli",
     "ready_for_real_submit": true
   },
   "paths": {
@@ -512,7 +513,7 @@ Task Store 是任务队列，也是任务真相源。
 
 所以它是一个**gating layer**。
 
-如果 intake 不完整，run 应保持 `WAITING_CONFIG`。
+如果 intake 不完整，run 不应进入真实提交流程。
 
 ## 6.4 `task_store.py`
 
@@ -587,14 +588,13 @@ V2.1 里，它不再以 adapter 为主，而是拆成四层：
 
 它的职责是**缩小搜索空间**，不是负责最终提交。
 
-### Provider
+### Browser Control Tools
 处理“通过哪个浏览器执行栈去做”的问题。
 
 包含：
-- `browser-use-cli`
-- `bb-browser`
+- `Playwright`
+- `browser-use-cli` fallback
 - `dry-run`
-- `manual`
 
 ### Live Takeover
 处理“Page Understanding 之后仍无法判断路径时，如何让 Agent 在预算内直接接管浏览器”。
@@ -611,7 +611,7 @@ V2.1 里，它不再以 adapter 为主，而是拆成四层：
 - 便宜证据与高成本探索解耦
 - 浏览器驱动与提交策略解耦
 - 成功经验能沉淀成 playbook 并优先复放
-- 能在不改 planner 的情况下更换 provider
+- 能在不改 planner 的情况下调整执行器和 fallback 工具
 
 ## 6.8 `prepare_page_understanding.py` / live takeover loop
 
@@ -692,8 +692,8 @@ V2.1 里，它不再以 adapter 为主，而是拆成四层：
 - 收集缺失字段与 policy 边界
 
 如果缺字段：
-- run 保持 `WAITING_CONFIG`
-- 只允许 setup，不允许真实提交
+- 不进入真实提交流程
+- 只允许补齐 intake，不允许真实提交
 
 意义：
 - 防止系统边跑边猜政策边界
@@ -717,9 +717,8 @@ V2.1 里，它不再以 adapter 为主，而是拆成四层：
 确认：
 - shared CDP 是否通
 - `browser-use` 是否可用
-- `bb-browser` 是否可用
 - `gog` 是否可用
-- 默认 provider 是什么
+- Playwright 执行器和 fallback 工具是否齐备
 - 是否 ready for real submit
 
 意义：
@@ -791,7 +790,7 @@ V2.1 里，它不再以 adapter 为主，而是拆成四层：
 
 动作：
 - 进入 `execution-core`
-- 根据 scout / replay / takeover + provider 执行
+- 根据 scout / replay / takeover + browser control stack 执行
 
 如果当前 route 还是低成本路径：
 - 先做 lightweight scout
@@ -884,13 +883,13 @@ V2.1 使用的核心状态有：
 流程已推进到邮箱验证、magic link 或其他外部回调阶段，等待 `gog` 或轮询信号自动恢复。
 
 ### `WAITING_POLICY_DECISION`
-已经触达业务决策点，需要人拍板是否继续。
+已经触达业务决策点，但无人值守模式不会停下来等人拍板；它是一个细分审计终态。
 
 ### `WAITING_MISSING_INPUT`
-明确缺少必需文案、分类、素材或授权边界，系统不能继续自动推进。
+明确缺少必需文案、分类、素材或授权边界；它是一个细分审计终态。
 
 ### `WAITING_MANUAL_AUTH`
-明确需要人工登录、2FA 或授权确认。
+明确需要密码、2FA、设备确认或其他无人值守不支持的认证动作；它是一个细分审计终态。
 
 ### `WAITING_SITE_RESPONSE`
 已经完成提交，等待站点审核或发布结果。
@@ -911,13 +910,14 @@ V2.1 使用的核心状态有：
 每个等待态还应至少带这些字段：
 - `wait_reason_code`
 - `resume_trigger`
-- `next_owner`
+- `resolution_owner`
+- `resolution_mode`
 - `evidence_ref`
 
 原因是状态只回答“卡在哪”，但不回答：
 - 为什么卡在这
-- 谁应该处理
-- 处理完后如何恢复
+- 是否会被自动恢复
+- 由谁自动恢复，或是否只是审计终态
 - 恢复时要看哪份证据
 
 如果没有这四个字段，reporter 很难做聚合，watchdog 也很难做有界恢复。
@@ -1024,7 +1024,7 @@ OAuth 可用，但要在策略允许下，并且 scope 正常。
 会做的事：
 - 识别 paid gate / sponsor surface
 - 记录证据
-- 给出明确 human decision point
+- 产出明确的审计终态和可复用的站点结论
 
 不会做的事：
 - 自动充值
@@ -1068,18 +1068,17 @@ V2.1 允许 Agent live takeover，但不把它设成默认主路径。
 
 ## 10.4 Provider 抽象
 
-Provider 层解决“怎么执行”的问题。
+Browser control 层解决“怎么执行”的问题。
 
-常见 provider：
-- `browser-use-cli`
-- `bb-browser`
+常见执行工具：
+- `Playwright`
+- `browser-use-cli` fallback
 - `dry-run`
-- `manual`
 
 这样做的意义是：
 - planner 不依赖具体浏览器实现
-- 可以根据环境在 preflight 阶段切换 provider
-- provider 故障不会逼迫 planner 重写
+- 可以根据环境在 preflight 阶段切换执行器或 fallback 工具
+- fallback 工具故障不会逼迫 planner 重写
 
 ## 10.5 Scout 抽象
 
@@ -1240,7 +1239,7 @@ watchdog 不是 worker，也不是 reporter。
 - 释放 stale task locks
 - 在无 batch lock 且 backlog 还在时，补跑一次 worker
 - reporter 太久没更新时，补跑一次 reporter
-- 对超时的 `WAITING_EXTERNAL_EVENT` 做一次恢复判断，并转成 `RETRYABLE` 或 `WAITING_MANUAL_AUTH`
+- 对超时的 `WAITING_EXTERNAL_EVENT` 做一次恢复判断，并转成 `RETRYABLE` 或细分审计终态
 
 如果恢复失败：
 - 报警给人
@@ -1376,7 +1375,7 @@ V2 用更本质的问题来决定升级：
 
 ### 模块 C：执行层
 再做：
-- provider abstraction
+- browser control abstraction
 - lightweight scout
 - live takeover loop
 - trajectory replay
@@ -1447,7 +1446,7 @@ V2 用更本质的问题来决定升级：
 
 ### 可替换
 - LLM 供应商
-- 具体 browser provider
+- 具体 browser control tool
 - 具体存储格式（JSON / SQLite / Postgres）
 - 具体 cron 系统
 
