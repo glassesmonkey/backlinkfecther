@@ -107,7 +107,9 @@ resolveBrowserRuntime
 -> load/create task
 -> replay (if playbook exists)
 -> scout
--> takeover
+-> Playwright ultra-light probe
+-> browser-use CLI fallback (if needed)
+-> Playwright deterministic finalization
 -> write task/artifact/playbook
 ```
 
@@ -236,6 +238,21 @@ resolveBrowserRuntime
 - `AIToolnet`
 
 这些站点现在更适合在 playbook 里标成 `paid_listing`，下次登录后直接跳过。
+
+### 5. browser-use fallback 现在已经在主链里
+
+当前 takeover 不是“纯 Playwright 一条路走到黑”，而是：
+
+- Playwright 先做极轻量探路
+- 如果路径明显，直接填表和提交
+- 如果路径不明显，就升级到 `browser-use CLI`
+- `browser-use CLI` 找到 submit surface 或终态后，再切回 Playwright 做最终截图和状态分类
+
+所以如果你看到 `phase_history` 里出现这些值，是正常的：
+
+- `takeover:probe`
+- `takeover:browser-use`
+- `takeover:finalization`
 
 ### 5. Cloudflare 403 / 525
 

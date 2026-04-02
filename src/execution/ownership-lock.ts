@@ -1,6 +1,11 @@
 import { getOwnershipLockPath, readJsonFile, writeJsonFile } from "../memory/data-store.js";
 
-export type BrowserOwner = "scout" | "takeover" | "replay";
+export type BrowserOwner =
+  | "scout"
+  | "replay"
+  | "probe:playwright"
+  | "takeover:browser-use"
+  | "finalization:playwright";
 
 interface OwnershipLock {
   owner: BrowserOwner;

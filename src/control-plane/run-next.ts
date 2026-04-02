@@ -1,7 +1,11 @@
 import { acquireBrowserOwnership, releaseBrowserOwnership } from "../execution/ownership-lock.js";
 import { runTrajectoryReplay } from "../execution/replay.js";
 import { runLightweightScout } from "../execution/scout.js";
-import { runLiveTakeover } from "../execution/takeover.js";
+import {
+  runBrowserUseFallback,
+  runPlaywrightUltraLightProbe,
+  runTakeoverFinalization,
+} from "../execution/takeover.js";
 import {
   ensureDataDirectories,
   getArtifactFilePath,
@@ -65,6 +69,14 @@ function refreshTask(task: TaskRecord, args: {
 function updateTaskStatus(task: TaskRecord, status: TaskStatus): void {
   task.status = status;
   task.updated_at = new Date().toISOString();
+}
+
+function appendUnique(target: string[], values: string[]): void {
+  for (const value of values) {
+    if (!target.includes(value)) {
+      target.push(value);
+    }
+  }
 }
 
 export async function runNextTask(args: {
@@ -182,28 +194,127 @@ export async function runNextTask(args: {
   }
 
   task.escalation_level = "takeover";
-  task.phase_history.push("takeover");
   task.takeover_attempts += 1;
   task.last_takeover_at = new Date().toISOString();
-  await acquireBrowserOwnership("takeover", task.id);
+  const takeoverTask = {
+    ...task,
+    target_url: effectiveTargetUrl,
+  };
+  const takeoverArtifacts: string[] = [];
+  const takeoverNotes: string[] = [];
 
+  task.phase_history.push("takeover:probe");
+  await acquireBrowserOwnership("probe:playwright", task.id);
+
+  let probeResult;
   try {
-    const takeoverResult = await runLiveTakeover({
+    probeResult = await runPlaywrightUltraLightProbe({
       runtime,
-      task: {
-        ...task,
-        target_url: effectiveTargetUrl,
-      },
+      task: takeoverTask,
     });
+  } finally {
+    await releaseBrowserOwnership();
+  }
 
+  if (probeResult.takeover_result) {
+    const takeoverResult = probeResult.takeover_result;
     task.last_takeover_outcome = takeoverResult.detail;
-    task.latest_artifacts.push(...takeoverResult.artifact_refs);
+    appendUnique(task.latest_artifacts, takeoverResult.artifact_refs);
     if (takeoverResult.wait) {
       task.wait = takeoverResult.wait;
     }
     task.terminal_class = takeoverResult.terminal_class;
     task.skip_reason_code = takeoverResult.skip_reason_code;
     task.notes.push(takeoverResult.detail);
+
+    if (takeoverResult.playbook) {
+      await saveTrajectoryPlaybook(takeoverResult.playbook);
+      task.trajectory_playbook_ref = task.hostname;
+    }
+
+    updateTaskStatus(task, takeoverResult.next_status);
+    await saveTask(task);
+    return { task, runtime_ok: true };
+  }
+
+  if (!probeResult.handoff) {
+    throw new Error("Playwright probe returned neither a final result nor a fallback handoff.");
+  }
+
+  takeoverArtifacts.push(...probeResult.handoff.artifact_refs);
+  takeoverNotes.push(probeResult.handoff.detail);
+
+  if (!runtime.preflight_checks.browser_use_cli.ok) {
+    task.last_takeover_outcome = "browser-use CLI fallback was required but unavailable in the current runtime.";
+    appendUnique(task.latest_artifacts, takeoverArtifacts);
+    task.wait = {
+      wait_reason_code: "BROWSER_USE_CLI_UNAVAILABLE",
+      resume_trigger: "Retry after browser-use CLI becomes available, or improve the Playwright probe path.",
+      resolution_owner: "system",
+      resolution_mode: "auto_resume",
+      evidence_ref: takeoverArtifacts[0] ?? scoutArtifactPath,
+    };
+    task.terminal_class = "outcome_not_confirmed";
+    task.notes.push(...takeoverNotes, task.last_takeover_outcome);
+    updateTaskStatus(task, "RETRYABLE");
+    await saveTask(task);
+    return { task, runtime_ok: true };
+  }
+
+  task.phase_history.push("takeover:browser-use");
+  await acquireBrowserOwnership("takeover:browser-use", task.id);
+
+  let browserUseResult;
+  try {
+    browserUseResult = await runBrowserUseFallback({
+      runtime,
+      task: takeoverTask,
+      handoff: probeResult.handoff,
+    });
+  } finally {
+    await releaseBrowserOwnership();
+  }
+
+  if (browserUseResult.takeover_result) {
+    const takeoverResult = browserUseResult.takeover_result;
+    task.last_takeover_outcome = takeoverResult.detail;
+    appendUnique(task.latest_artifacts, [...takeoverArtifacts, ...takeoverResult.artifact_refs]);
+    if (takeoverResult.wait) {
+      task.wait = takeoverResult.wait;
+    }
+    task.terminal_class = takeoverResult.terminal_class;
+    task.skip_reason_code = takeoverResult.skip_reason_code;
+    task.notes.push(...takeoverNotes, takeoverResult.detail);
+    updateTaskStatus(task, takeoverResult.next_status);
+    await saveTask(task);
+    return { task, runtime_ok: true };
+  }
+
+  if (!browserUseResult.handoff) {
+    throw new Error("browser-use CLI fallback returned neither a final result nor a finalization handoff.");
+  }
+
+  takeoverArtifacts.push(...browserUseResult.handoff.artifact_refs);
+  takeoverNotes.push(browserUseResult.handoff.detail);
+
+  task.phase_history.push("takeover:finalization");
+  await acquireBrowserOwnership("finalization:playwright", task.id);
+
+  try {
+    const takeoverResult = await runTakeoverFinalization({
+      runtime,
+      task: takeoverTask,
+      handoff: browserUseResult.handoff,
+    });
+
+    task.last_takeover_outcome = takeoverResult.detail;
+    appendUnique(task.latest_artifacts, [...takeoverArtifacts, ...takeoverResult.artifact_refs]);
+    if (takeoverResult.wait) {
+      task.wait = takeoverResult.wait;
+    }
+    task.terminal_class = takeoverResult.terminal_class;
+    task.skip_reason_code = takeoverResult.skip_reason_code;
+    task.notes.push(...takeoverNotes, takeoverResult.detail);
 
     if (takeoverResult.playbook) {
       await saveTrajectoryPlaybook(takeoverResult.playbook);

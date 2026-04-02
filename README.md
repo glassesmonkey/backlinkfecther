@@ -83,8 +83,8 @@ pnpm run-next -- \
 说明：
 
 - 如果不显式设置 `BACKLINK_BROWSER_CDP_URL`，系统会先尝试自动发现外部 Chrome，优先探测 `9222 / 9223 / 9224 / 9229`。
-- `run-next` 是当前最重要的执行入口。它会跑 `preflight -> replay -> scout -> takeover -> task/artifact update`。
-- 现在的主执行路径是 **Playwright + shared CDP**。`browser-use` 的 shared CDP 能力已经做过独立验证，但还没有接进当前 CLI 主链。
+- `run-next` 是当前最重要的执行入口。它会跑 `preflight -> replay -> scout -> Playwright probe -> browser-use fallback -> Playwright finalization -> task/artifact update`。
+- 现在的主执行路径是 **Playwright + shared CDP + browser-use CLI fallback**。简单站点先走极轻量 Playwright 探路，复杂路径再升级到 `browser-use CLI`。
 
 ## 当前代码地图
 
@@ -116,11 +116,13 @@ pnpm run-next -- \
   - `preflight`
   - `scout`
   - `trajectory replay`
-  - 规则式 `takeover`
+  - Playwright 极轻量探路
+  - `browser-use CLI` takeover fallback
+  - Playwright deterministic finalization
   - task / artifact / promoted profile 落盘
 - 当前 CLI 还没有稳定支持：
-  - 通用 OAuth 自动化
+  - 通用 OAuth 自动化引擎
   - 完整的 `gog` 自动恢复链
   - reporter / watchdog CLI
-  - 通用 `browser-use` takeover worker
+  - 高置信的 browser-use playbook 结构化沉淀
 - 所以请把两份架构稿理解为 `north star`，把这份 README 和 `docs/` 理解为“当前真正在跑的版本”。

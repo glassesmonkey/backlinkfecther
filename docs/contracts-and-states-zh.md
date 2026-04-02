@@ -27,7 +27,7 @@
 | 路径 | 用途 |
 | --- | --- |
 | `data/backlink-helper/tasks/` | 每个 task 一份 JSON |
-| `data/backlink-helper/artifacts/` | scout / takeover 结果和截图 |
+| `data/backlink-helper/artifacts/` | scout / probe / browser-use / takeover 结果和截图 |
 | `data/backlink-helper/playbooks/sites/` | 同域 trajectory playbook |
 | `data/backlink-helper/profiles/` | promoted site profile |
 | `data/backlink-helper/runs/` | `latest-preflight.json` 等运行清单 |
@@ -76,6 +76,13 @@
 | `phase_history` | `string[]` | 跑过哪些阶段 |
 | `latest_artifacts` | `string[]` | 最近产生的 artifact 路径 |
 | `notes` | `string[]` | 面向人读的摘要说明 |
+
+`phase_history` 当前常见值：
+
+- `scout`
+- `takeover:probe`
+- `takeover:browser-use`
+- `takeover:finalization`
 
 ### `WaitMetadata`
 
@@ -168,8 +175,12 @@
 | artifact 类型 | 文件名模式 | 来源 |
 | --- | --- | --- |
 | scout JSON | `{taskId}-scout.json` | `runLightweightScout()` |
-| takeover JSON | `{taskId}-takeover.json` | `runLiveTakeover()` |
-| takeover 截图 | `{taskId}-takeover.png` | `runLiveTakeover()` |
+| probe JSON | `{taskId}-probe.json` | `runPlaywrightUltraLightProbe()` |
+| probe 截图 | `{taskId}-probe.png` | `runPlaywrightUltraLightProbe()` |
+| browser-use JSON | `{taskId}-browser-use.json` | `runBrowserUseFallback()` |
+| browser-use 截图 | `{taskId}-browser-use.png` | `runBrowserUseFallback()` |
+| takeover JSON | `{taskId}-takeover.json` | `runTakeoverFinalization()` |
+| takeover 截图 | `{taskId}-takeover.png` | `runTakeoverFinalization()` |
 | replay 截图 | `{name}.png` | `runTrajectoryReplay()` 里的 `screenshot` step |
 | preflight 清单 | `runs/latest-preflight.json` | `pnpm preflight` |
 | 浏览器锁 | `runtime/browser-ownership-lock.json` | ownership lock |

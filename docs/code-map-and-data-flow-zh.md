@@ -30,7 +30,9 @@ CLI
  -> load/create task
  -> optional replay
  -> scout
- -> takeover
+ -> Playwright ultra-light probe
+ -> browser-use CLI fallback (if needed)
+ -> Playwright deterministic finalization
  -> save task / artifact / playbook
 ```
 
@@ -162,19 +164,26 @@ CLI
 
 职责：
 
-- 进入 submit surface
-- 发现字段
-- 按字段语义填入 promoted profile / submitter email
-- 点击最终 submit
+- 先用 Playwright 做极轻量探路
+- 简单表单直接完成填表和提交
+- 复杂路径升级到 `browser-use CLI`
+- 再切回 Playwright 做确定性收口
 - 根据页面结果分类为 `WAITING_* / RETRYABLE`
 - 必要时生成 playbook
-
-当前 takeover 是“规则式 takeover”，还不是通用 agent worker。
 
 你如果要改页面分类、付费页判断、登录页判断、字段映射，优先改这里。
 
 重点子模块：
 
+- `runPlaywrightUltraLightProbe()`
+  - 只点最明显的入口
+  - 只填当前页稳定可见字段
+  - 不顺就立刻交给 `browser-use CLI`
+- `runBrowserUseFallback()`
+  - 用 `browser-use CLI` 在复杂页面里找路
+  - 负责 chooser / consent / 多步 flow 的 pathfinding
+- `runTakeoverFinalization()`
+  - 切回 Playwright 做最终截图、证据落盘、playbook 规范化
 - `discoverSubmitTargets()`
   - 找 submit / add listing / get listed 入口
 - `discoverFields()`
@@ -218,17 +227,21 @@ CLI
 
 - `src/execution/ownership-lock.ts`
 
-当前 owner 只有三个：
+当前 owner 有五个：
 
 - `scout`
-- `takeover`
 - `replay`
+- `probe:playwright`
+- `takeover:browser-use`
+- `finalization:playwright`
 
 交接边界固定在阶段边界：
 
 - replay 结束
 - scout 结束
-- takeover 结束
+- Playwright probe 结束
+- browser-use fallback 结束
+- Playwright finalization 结束
 
 本质目的：
 
@@ -261,8 +274,8 @@ CLI
 
 说明：
 
-- 当前 repo 还没有稳定的通用 OAuth helper。
-- 外部 Chrome profile + 共享登录态已经验证有效，但主链里还没抽象成完整自动恢复能力。
+- 当前 repo 已经把 `browser-use CLI` 接进主链，但它只在复杂 takeover 时作为 fallback。
+- 外部 Chrome profile + 共享登录态已经验证有效，但还没有完整的通用 OAuth 自动恢复引擎。
 
 ### 想改 playbook 和记忆落盘
 
@@ -281,17 +294,16 @@ CLI
 
 - 外部 Chrome 优先
 - shared CDP
-- replay / scout / takeover 三段式
+- replay / scout / probe / browser-use fallback / finalization 五段式
 - 本地 JSON task / artifact / playbook / profile 落盘
 - wait state 细分
 
 当前代码还没有做到：
 
-- `browser-use` 真正接入 CLI 主链
 - 通用 OAuth worker
 - `gog` 自动恢复 worker
 - reporter / watchdog CLI
-- 真正的 bounded live takeover budget 控制
+- 高置信的 browser-use playbook 结构化沉淀
 
 所以你后续维护时，要先问一句：
 
