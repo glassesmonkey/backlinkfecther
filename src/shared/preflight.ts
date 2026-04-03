@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 
+import { validateAgentBackendConfig } from "../agent/decider.js";
 import { runCommand } from "./command.js";
 import type { BrowserRuntime, PreflightCheckResult } from "./types.js";
 
@@ -150,10 +151,19 @@ async function checkGog(): Promise<PreflightCheckResult> {
   };
 }
 
+async function checkAgentBackend(): Promise<PreflightCheckResult> {
+  const validation = validateAgentBackendConfig();
+  return {
+    ok: validation.ok,
+    detail: validation.detail,
+  };
+}
+
 export async function runPreflight(runtime: BrowserRuntime): Promise<BrowserRuntime> {
   const cdp_runtime = await checkCdpRuntime(runtime.cdp_url);
   const playwright = await checkPlaywright(runtime.cdp_url);
   const browser_use_cli = await checkBrowserUseCli();
+  const agent_backend = await checkAgentBackend();
   const gog = await checkGog();
 
   return {
@@ -163,6 +173,7 @@ export async function runPreflight(runtime: BrowserRuntime): Promise<BrowserRunt
       cdp_runtime,
       playwright,
       browser_use_cli,
+      agent_backend,
       gog,
     },
   };

@@ -167,6 +167,7 @@ export async function resolveBrowserRuntime(
       cdp_runtime: { ok: false, detail: "Not checked yet." },
       playwright: { ok: false, detail: "Not checked yet." },
       browser_use_cli: { ok: false, detail: "Not checked yet." },
+      agent_backend: { ok: false, detail: "Not checked yet." },
       gog: { ok: false, detail: "Not checked yet." },
     },
   };

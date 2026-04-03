@@ -14,6 +14,8 @@
 
 - `/Volumes/WD1T/outsea/backliner-helper/src/cli/index.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/run-next.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/agent/decider.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/agent/openai-decider.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/shared/browser-runtime.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/shared/preflight.ts`
 
@@ -66,7 +68,15 @@ curl http://127.0.0.1:9223/json/version
 ```bash
 cd /Volumes/WD1T/outsea/backliner-helper
 export BACKLINK_BROWSER_CDP_URL=http://127.0.0.1:9223
+export OPENAI_API_KEY=...
 pnpm preflight
+```
+
+如果你想改模型或自定义 endpoint，再加这些变量：
+
+```bash
+export BACKLINER_AGENT_MODEL=gpt-5
+export OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 ### 3. 跑一个单任务
@@ -83,17 +93,23 @@ pnpm run-next -- \
 说明：
 
 - 如果不显式设置 `BACKLINK_BROWSER_CDP_URL`，系统会先尝试自动发现外部 Chrome，优先探测 `9222 / 9223 / 9224 / 9229`。
-- `run-next` 是当前最重要的执行入口。它会跑 `preflight -> replay -> scout -> Playwright probe -> browser-use fallback -> Playwright finalization -> task/artifact update`。
-- 现在的主执行路径是 **Playwright + shared CDP + browser-use CLI fallback**。简单站点先走极轻量 Playwright 探路，复杂路径再升级到 `browser-use CLI`。
+- `run-next` 是当前最重要的执行入口。它会跑 `preflight -> replay -> scout -> agent-driven browser-use CLI loop -> Playwright finalization -> task/artifact update`。
+- 当前对“新站点”的默认策略是 **agent-first**：
+  - 有高置信 playbook 才直接 replay
+  - 没有 playbook 就进入 `browser-use CLI` 的 agent loop
+  - `Playwright` 只保留 replay 和证据收口
+- 如果 `browser-use CLI` 或 agent backend 没配置好，`run-next` 会在真正执行前把 task 标成 `RETRYABLE`，而不是半路崩掉。
 
 ## 当前代码地图
 
 - `src/cli/`
   - 终端入口。负责解析参数并调用控制面。
 - `src/control-plane/`
-  - 执行编排。负责 `preflight`、task lifecycle、replay/scout/takeover 的顺序。
+  - 执行编排。负责 `preflight`、task lifecycle、replay/scout/agent loop/finalization 的顺序。
+- `src/agent/`
+  - agent 决策层。负责把浏览器当前状态变成下一步结构化动作。
 - `src/execution/`
-  - 具体浏览器动作。包括 `scout`、`takeover`、`replay`、浏览器写锁。
+  - 具体浏览器动作。包括 `scout`、agent loop 执行器、`replay`、浏览器写锁、最终收口。
 - `src/memory/`
   - 本地 JSON 落盘。包括 task、artifact、playbook、profile 的路径和读写。
 - `src/shared/`
@@ -116,13 +132,12 @@ pnpm run-next -- \
   - `preflight`
   - `scout`
   - `trajectory replay`
-  - Playwright 极轻量探路
-  - `browser-use CLI` takeover fallback
-  - Playwright deterministic finalization
+  - `agent-driven browser-use CLI` 主执行链
+  - Playwright evidence finalization
   - task / artifact / promoted profile 落盘
 - 当前 CLI 还没有稳定支持：
   - 通用 OAuth 自动化引擎
   - 完整的 `gog` 自动恢复链
   - reporter / watchdog CLI
-  - 高置信的 browser-use playbook 结构化沉淀
+  - 高置信的 agent trace 到 replay playbook 自动蒸馏
 - 所以请把两份架构稿理解为 `north star`，把这份 README 和 `docs/` 理解为“当前真正在跑的版本”。

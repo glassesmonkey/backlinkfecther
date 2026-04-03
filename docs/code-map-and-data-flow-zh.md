@@ -30,9 +30,8 @@ CLI
  -> load/create task
  -> optional replay
  -> scout
- -> Playwright ultra-light probe
- -> browser-use CLI fallback (if needed)
- -> Playwright deterministic finalization
+ -> agent-driven browser-use CLI loop
+ -> Playwright evidence finalization
  -> save task / artifact / playbook
 ```
 
@@ -90,6 +89,7 @@ CLI
 - 验证 `cdp_runtime`
 - 验证 Playwright 能否连接
 - 检查 `browser-use CLI`
+- 检查 `agent backend`
 - 检查 `gog`
 
 这一步的本质目的不是“跑业务”，而是尽早告诉你环境有没有资格开工。
@@ -156,18 +156,20 @@ CLI
 - 最终填表
 - wait reason code 映射
 
-### 5. `takeover`
+### 5. `agent takeover`
 
 入口：
 
 - `src/execution/takeover.ts`
+- `src/agent/decider.ts`
+- `src/agent/openai-decider.ts`
 
 职责：
 
-- 先用 Playwright 做极轻量探路
-- 简单表单直接完成填表和提交
-- 复杂路径升级到 `browser-use CLI`
-- 再切回 Playwright 做确定性收口
+- 用 `browser-use CLI` 执行 agent 决策出来的浏览器动作
+- 让 agent 基于当前 `state`、最近动作、预算、策略边界决定下一步
+- 命中终态时输出结构化结果，而不是自由文本
+- 再切回 Playwright 做证据收口和 playbook 规范化
 - 根据页面结果分类为 `WAITING_* / RETRYABLE`
 - 必要时生成 playbook
 
@@ -175,22 +177,21 @@ CLI
 
 重点子模块：
 
-- `runPlaywrightUltraLightProbe()`
-  - 只点最明显的入口
-  - 只填当前页稳定可见字段
-  - 不顺就立刻交给 `browser-use CLI`
-- `runBrowserUseFallback()`
-  - 用 `browser-use CLI` 在复杂页面里找路
-  - 负责 chooser / consent / 多步 flow 的 pathfinding
+- `runAgentDrivenBrowserUseLoop()`
+  - 读取 browser-use snapshot
+  - 构造 `AgentDecisionInput`
+  - 调 `AgentDecider.decide()`
+  - 执行结构化动作并记录 trace
+  - 命中预算、终态、无增益阈值时停止
+- `createAgentDecider()`
+  - 解析当前 agent backend 配置
+  - 创建真正可运行的 backend 实例
+- `createOpenAIDecider()`
+  - 用 OpenAI Responses API 返回结构化下一步动作
 - `runTakeoverFinalization()`
-  - 切回 Playwright 做最终截图、证据落盘、playbook 规范化
-- `discoverSubmitTargets()`
-  - 找 submit / add listing / get listed 入口
-- `discoverFields()`
-  - 抽取 input / textarea / select
-  - 只保留当前可见字段
-- `inferFieldSemantic()`
-  - 判断字段是 URL、名称、描述、邮箱、分类、价格还是未知
+  - 切回 Playwright 选中当前页
+  - 写 `finalization` artifact
+  - 统一做状态确认、截图和 playbook 落盘
 - `inferCurrentOutcome()`
   - 把页面文本映射成状态和 `wait_reason_code`
 
@@ -227,20 +228,18 @@ CLI
 
 - `src/execution/ownership-lock.ts`
 
-当前 owner 有五个：
+当前 owner 有四个：
 
 - `scout`
 - `replay`
-- `probe:playwright`
-- `takeover:browser-use`
+- `takeover:agent-loop`
 - `finalization:playwright`
 
 交接边界固定在阶段边界：
 
 - replay 结束
 - scout 结束
-- Playwright probe 结束
-- browser-use fallback 结束
+- agent loop 结束
 - Playwright finalization 结束
 
 本质目的：
@@ -274,7 +273,8 @@ CLI
 
 说明：
 
-- 当前 repo 已经把 `browser-use CLI` 接进主链，但它只在复杂 takeover 时作为 fallback。
+- 当前 repo 已经把 `browser-use CLI` 提升成新站默认主执行链，但它仍然只是 agent 的浏览器工具，不是独立 brain。
+- `Playwright` 现在只保留 replay 和 evidence finalization。
 - 外部 Chrome profile + 共享登录态已经验证有效，但还没有完整的通用 OAuth 自动恢复引擎。
 
 ### 想改 playbook 和记忆落盘
@@ -294,7 +294,7 @@ CLI
 
 - 外部 Chrome 优先
 - shared CDP
-- replay / scout / probe / browser-use fallback / finalization 五段式
+- replay / scout / agent loop / finalization 四段式
 - 本地 JSON task / artifact / playbook / profile 落盘
 - wait state 细分
 

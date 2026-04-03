@@ -2,6 +2,7 @@
 
 > 当前 repo 的运行方式、状态契约、站点案例和维护入口，请先看 [README.md](README.md) 与 [docs/](docs/) 下文档。
 > 这份文件继续保留为 `north star` 图版说明，不等价于当前代码实现细节。
+> 当前 repo 的默认实现已经是 unattended-first：新站默认 `scout -> agent-driven browser-use CLI -> Playwright evidence finalization`，`WAITING_POLICY_DECISION / WAITING_MANUAL_AUTH / WAITING_MISSING_INPUT` 仅作为审计终态使用。
 
 > 用途：给技术合伙人、架构师、工程负责人快速看懂 Web Backlinker V2.1。
 >

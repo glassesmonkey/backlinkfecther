@@ -27,7 +27,7 @@
 | 路径 | 用途 |
 | --- | --- |
 | `data/backlink-helper/tasks/` | 每个 task 一份 JSON |
-| `data/backlink-helper/artifacts/` | scout / probe / browser-use / takeover 结果和截图 |
+| `data/backlink-helper/artifacts/` | scout / agent-loop / finalization 结果和截图 |
 | `data/backlink-helper/playbooks/sites/` | 同域 trajectory playbook |
 | `data/backlink-helper/profiles/` | promoted site profile |
 | `data/backlink-helper/runs/` | `latest-preflight.json` 等运行清单 |
@@ -44,7 +44,7 @@
 | `source` | `BrowserRuntimeSource` | 这个 `cdp_url` 从哪里来的 |
 | `browser_name` | `string` | `/json/version` 返回的浏览器名 |
 | `protocol_version` | `string` | DevTools Protocol 版本 |
-| `preflight_checks` | object | 四项检查结果 |
+| `preflight_checks` | object | 五项检查结果 |
 
 `BrowserRuntimeSource` 当前可能值：
 
@@ -72,6 +72,8 @@
 | `last_takeover_at` | `string?` | 最近一次 takeover 时间 |
 | `last_takeover_outcome` | `string?` | 最近一次 takeover 结论 |
 | `trajectory_playbook_ref` | `string?` | 当前使用或生成的 playbook key |
+| `terminal_class` | `TerminalClass?` | 当前终态分类标签 |
+| `skip_reason_code` | `string?` | 明确跳过时的结构化原因 |
 | `wait` | `WaitMetadata?` | 等待态元信息 |
 | `phase_history` | `string[]` | 跑过哪些阶段 |
 | `latest_artifacts` | `string[]` | 最近产生的 artifact 路径 |
@@ -80,8 +82,7 @@
 `phase_history` 当前常见值：
 
 - `scout`
-- `takeover:probe`
-- `takeover:browser-use`
+- `takeover:agent-loop`
 - `takeover:finalization`
 
 ### `WaitMetadata`
@@ -109,8 +110,55 @@
 | `success_signals` | `string[]` | 哪些文本代表成功 |
 | `fallback_notes` | `string[]` | replay 失败后怎么退回 |
 | `replay_confidence` | `number` | 当前 replay 信心 |
+| `distilled_from_trace_ref` | `string?` | 这份 playbook 来自哪个 agent trace |
+| `agent_backend` | `string?` | 生成它的 agent backend |
 | `created_at` | `string` | 创建时间 |
 | `updated_at` | `string` | 最近更新时间 |
+
+### `AgentDecision`
+
+这是 agent backend 每一步必须返回的结构化动作。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `action` | `AgentDecisionAction` | 下一步要执行什么 |
+| `url` | `string?` | `open_url` 时使用 |
+| `index` | `number?` | `click_index / input_index / select_index` 时使用 |
+| `text` | `string?` | `input_index` 文本 |
+| `value` | `string?` | `select_index` 选项值 |
+| `keys` | `string?` | `keys` 动作要发送的按键 |
+| `wait_kind` | `"text" | "selector"?` | `wait` 动作类型 |
+| `wait_target` | `string?` | 等待目标 |
+| `wait_timeout_ms` | `number?` | 等待超时 |
+| `wait_state` | `"attached" | "detached" | "visible" | "hidden"?` | selector wait 的状态 |
+| `next_status` | `TaskStatus?` | 分类终态时要落到哪个状态 |
+| `wait_reason_code` | `string?` | 分类或等待原因 |
+| `resume_trigger` | `string?` | 自动恢复条件，或终态解释 |
+| `resolution_owner` | `"system" | "gog" | "none"?` | 谁负责恢复 |
+| `resolution_mode` | `"auto_resume" | "terminal_audit"?` | 自动恢复还是审计终态 |
+| `terminal_class` | `TerminalClass?` | 终态语义标签 |
+| `skip_reason_code` | `string?` | 明确跳过原因 |
+| `detail` | `string?` | 给 artifact 和 task notes 的简要说明 |
+| `reason` | `string` | 这一步为什么这么做 |
+| `confidence` | `number` | 这一步的信心 |
+| `expected_signal` | `string` | 预期看到什么变化 |
+| `stop_if_observed` | `string[]` | 如果出现这些信号就该停止当前思路 |
+
+### `AgentLoopTrace`
+
+这是 agent-first 主链的核心 artifact。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `task_id` | `string` | 对应 task |
+| `agent_backend` | `string` | 本次使用的 backend |
+| `started_at` | `string` | loop 开始时间 |
+| `finished_at` | `string` | loop 结束时间 |
+| `stop_reason` | `string` | 为什么停止 |
+| `final_url` | `string` | 停止时 URL |
+| `final_title` | `string` | 停止时页面标题 |
+| `final_excerpt` | `string` | 停止时页面文本摘要 |
+| `steps` | `AgentLoopTraceStep[]` | 每一步 observation / decision / execution |
 
 ### `ScoutResult`
 
@@ -137,6 +185,9 @@
 | `terminal_class` | `TerminalClass?` | 当前终态或结果分类 |
 | `skip_reason_code` | `string?` | 当状态为 `SKIPPED` 时使用 |
 | `playbook` | `TrajectoryPlaybook?` | 如可复用，附带返回 |
+| `agent_trace_ref` | `string?` | 当前结果引用的 agent trace |
+| `agent_backend` | `string?` | 当前结果来自哪个 backend |
+| `agent_steps_count` | `number?` | agent loop 总步数 |
 
 ## 状态总表
 
@@ -161,6 +212,8 @@
 | --- | --- | --- |
 | `DIRECTORY_NAVIGATION_FAILED` | `RETRYABLE` | scout 连站都没进去 |
 | `DIRECTORY_UPSTREAM_5XX` | `RETRYABLE` | 目录站上游 5xx |
+| `BROWSER_USE_CLI_UNAVAILABLE` | `RETRYABLE` | 新站默认执行器不可用 |
+| `AGENT_BACKEND_UNAVAILABLE` | `RETRYABLE` | agent backend 配置不完整或不支持 |
 | `CAPTCHA_BLOCKED` | `WAITING_POLICY_DECISION` | 站点要求 CAPTCHA / bot verification |
 | `DIRECTORY_LOGIN_REQUIRED` | `WAITING_MANUAL_AUTH` | 必须先登录 |
 | `PAID_OR_SPONSORED_LISTING` | `WAITING_POLICY_DECISION` | 明显付费 / 赞助要求 |
@@ -175,12 +228,10 @@
 | artifact 类型 | 文件名模式 | 来源 |
 | --- | --- | --- |
 | scout JSON | `{taskId}-scout.json` | `runLightweightScout()` |
-| probe JSON | `{taskId}-probe.json` | `runPlaywrightUltraLightProbe()` |
-| probe 截图 | `{taskId}-probe.png` | `runPlaywrightUltraLightProbe()` |
-| browser-use JSON | `{taskId}-browser-use.json` | `runBrowserUseFallback()` |
-| browser-use 截图 | `{taskId}-browser-use.png` | `runBrowserUseFallback()` |
-| takeover JSON | `{taskId}-takeover.json` | `runTakeoverFinalization()` |
-| takeover 截图 | `{taskId}-takeover.png` | `runTakeoverFinalization()` |
+| agent loop JSON | `{taskId}-agent-loop.json` | `runAgentDrivenBrowserUseLoop()` |
+| agent loop 截图 | `{taskId}-agent-loop.png` | `runAgentDrivenBrowserUseLoop()` |
+| finalization JSON | `{taskId}-finalization.json` | `runTakeoverFinalization()` |
+| finalization 截图 | `{taskId}-finalization.png` | `runTakeoverFinalization()` |
 | replay 截图 | `{name}.png` | `runTrajectoryReplay()` 里的 `screenshot` step |
 | preflight 清单 | `runs/latest-preflight.json` | `pnpm preflight` |
 | 浏览器锁 | `runtime/browser-ownership-lock.json` | ownership lock |

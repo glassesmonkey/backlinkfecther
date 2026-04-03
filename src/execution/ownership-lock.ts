@@ -3,8 +3,7 @@ import { getOwnershipLockPath, readJsonFile, writeJsonFile } from "../memory/dat
 export type BrowserOwner =
   | "scout"
   | "replay"
-  | "probe:playwright"
-  | "takeover:browser-use"
+  | "takeover:agent-loop"
   | "finalization:playwright";
 
 interface OwnershipLock {

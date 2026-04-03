@@ -21,6 +21,12 @@
 这份案例册记录的是“站点层结论”，不是“某一次 task 的瞬时状态”。  
 如果 task JSON 和案例结论冲突，以这里的复用结论为准，并回头修 takeover 规则。
 
+当前实现前提：
+
+- 新站默认走 `scout -> agent-driven browser-use CLI loop -> Playwright finalization`
+- `Playwright replay` 只用于已有高置信 playbook
+- 所以案例册里记录的重点不是“某个探路器成没成功”，而是“这个站最终属于哪一类”
+
 ## 站点总表
 
 | site | entry_url | auth_mode | submit_surface | observed_terminal_class | recommended_playbook_action | last_verified_at | evidence_artifact |
@@ -30,7 +36,7 @@
 | `theresanaiforthat.com` | `https://theresanaiforthat.com/launch/` | `profile_already_authenticated` | `https://theresanaiforthat.com/launch/` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/taaft-oauth-manual-test.png` |
 | `aitoolnet.com` | `https://www.aitoolnet.com/` | `login_then_paid_flow` | `https://www.aitoolnet.com/submit` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolnet-takeover.json` |
 | `aidirectory.org` | `https://www.aidirectory.org/` | `direct_submit` | `https://www.aidirectory.org/user-submit/` | `outcome_not_confirmed` | `retry_with_better_submit_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aidirectory-takeover.json` |
-| `aisupersmart.com` | `https://www.aisupersmart.com/` | `google_login_required` | `https://www.aisupersmart.com/submit-tool/` | `login_required` | `manual_auth_only_for_now` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aisupersmart-takeover.json` |
+| `aisupersmart.com` | `https://www.aisupersmart.com/` | `google_login_required` | `https://www.aisupersmart.com/submit-tool/` | `login_required` | `skip_until_oauth_helper_is_stable` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aisupersmart-takeover.json` |
 | `aitoolsdirectory.com` | `http://aitoolsdirectory.com/` | `none_verified` | `not_reached` | `upstream_5xx` | `skip_until_site_health_recovers` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolsdirectory-scout.json` |
 
 ## 逐站说明
@@ -107,7 +113,7 @@
   - 页面登录入口受 LiteSpeed 延迟脚本影响
   - 这导致自动化入口识别和接手时机不够稳定
 - 复用结论：
-  - 当前先标 `manual_auth_only_for_now`
+  - 当前先标 `skip_until_oauth_helper_is_stable`
   - 等有稳定 OAuth helper 再继续推进
 
 ### `aitoolsdirectory.com`

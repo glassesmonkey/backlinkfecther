@@ -38,6 +38,12 @@ async function runStep(
         timeout: step.timeout_ms,
       });
       return;
+    case "wait_for_selector":
+      await page.locator(resolveTemplate(step.selector, task)).first().waitFor({
+        state: step.state ?? "visible",
+        timeout: step.timeout_ms,
+      });
+      return;
     case "click_text":
       await page
         .getByText(resolveTemplate(step.text, task), { exact: step.exact ?? false })

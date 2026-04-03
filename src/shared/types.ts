@@ -21,8 +21,16 @@ export interface BrowserRuntime {
     cdp_runtime: PreflightCheckResult;
     playwright: PreflightCheckResult;
     browser_use_cli: PreflightCheckResult;
+    agent_backend: PreflightCheckResult;
     gog: PreflightCheckResult;
   };
+}
+
+export interface AgentBackendConfig {
+  backend: "openai";
+  model: string;
+  base_url: string;
+  api_key_env: string;
 }
 
 export interface PromotedProfile {
@@ -63,6 +71,17 @@ export type TerminalClass =
   | "upstream_5xx"
   | "outcome_not_confirmed"
   | "takeover_runtime_error";
+
+export type AgentDecisionAction =
+  | "open_url"
+  | "click_index"
+  | "input_index"
+  | "select_index"
+  | "keys"
+  | "wait"
+  | "finish_submission_attempt"
+  | "classify_terminal"
+  | "abort_retryable";
 
 export interface WaitMetadata {
   wait_reason_code: string;
@@ -112,9 +131,103 @@ export interface ScoutResult {
   page_snapshot: PageSnapshot;
 }
 
+export interface AgentObservationElement {
+  index: number;
+  descriptor: string;
+  text: string;
+  allowed_actions: Array<"click_index" | "input_index" | "select_index">;
+}
+
+export interface AgentObservation {
+  url: string;
+  title: string;
+  raw_text_excerpt: string;
+  elements: AgentObservationElement[];
+}
+
+export interface AgentDecisionInput {
+  task_id: string;
+  hostname: string;
+  submission: SubmissionContext;
+  scout_hints: Pick<ScoutResult, "field_hints" | "auth_hints" | "anti_bot_hints" | "submit_candidates">;
+  observation: AgentObservation;
+  recent_actions: Array<{
+    step_number: number;
+    action: AgentDecisionAction;
+    detail: string;
+    result: "ok" | "failed";
+  }>;
+  budget: {
+    elapsed_ms: number;
+    remaining_actions: number;
+    repeated_surface_count: number;
+    repeated_action_count: number;
+    no_progress_streak: number;
+  };
+  policy: {
+    allow_paid_listing: boolean;
+    allow_reciprocal: boolean;
+    allow_captcha_bypass: boolean;
+    allow_google_oauth_chooser: boolean;
+    allow_password_login: boolean;
+    allow_2fa: boolean;
+  };
+}
+
+export interface AgentDecision {
+  action: AgentDecisionAction;
+  url?: string;
+  index?: number;
+  text?: string;
+  value?: string;
+  keys?: string;
+  wait_kind?: "text" | "selector";
+  wait_target?: string;
+  wait_timeout_ms?: number;
+  wait_state?: "attached" | "detached" | "visible" | "hidden";
+  next_status?: TaskStatus;
+  wait_reason_code?: string;
+  resume_trigger?: string;
+  resolution_owner?: ResolutionOwner;
+  resolution_mode?: ResolutionMode;
+  terminal_class?: TerminalClass;
+  skip_reason_code?: string;
+  detail?: string;
+  reason: string;
+  confidence: number;
+  expected_signal: string;
+  stop_if_observed: string[];
+}
+
+export interface AgentLoopTraceStep {
+  step_number: number;
+  observation: AgentObservation;
+  decision: AgentDecision;
+  execution: {
+    ok: boolean;
+    detail: string;
+    before_url: string;
+    after_url: string;
+    duration_ms: number;
+  };
+}
+
+export interface AgentLoopTrace {
+  task_id: string;
+  agent_backend: string;
+  started_at: string;
+  finished_at: string;
+  stop_reason: string;
+  final_url: string;
+  final_title: string;
+  final_excerpt: string;
+  steps: AgentLoopTraceStep[];
+}
+
 export type ReplayStep =
   | { action: "goto"; url: string }
   | { action: "wait_for_text"; text: string; timeout_ms?: number }
+  | { action: "wait_for_selector"; selector: string; timeout_ms?: number; state?: "attached" | "detached" | "visible" | "hidden" }
   | { action: "wait_for_url_includes"; value: string; timeout_ms?: number }
   | { action: "click_text"; text: string; exact?: boolean }
   | { action: "click_role"; role: "button" | "link" | "textbox"; name: string }
@@ -139,6 +252,8 @@ export interface TrajectoryPlaybook {
   success_signals: string[];
   fallback_notes: string[];
   replay_confidence: number;
+  distilled_from_trace_ref?: string;
+  agent_backend?: string;
   created_at: string;
   updated_at: string;
 }
@@ -162,4 +277,7 @@ export interface TakeoverResult {
   terminal_class?: TerminalClass;
   skip_reason_code?: string;
   playbook?: TrajectoryPlaybook;
+  agent_trace_ref?: string;
+  agent_backend?: string;
+  agent_steps_count?: number;
 }

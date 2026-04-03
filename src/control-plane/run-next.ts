@@ -2,8 +2,7 @@ import { acquireBrowserOwnership, releaseBrowserOwnership } from "../execution/o
 import { runTrajectoryReplay } from "../execution/replay.js";
 import { runLightweightScout } from "../execution/scout.js";
 import {
-  runBrowserUseFallback,
-  runPlaywrightUltraLightProbe,
+  runAgentDrivenBrowserUseLoop,
   runTakeoverFinalization,
 } from "../execution/takeover.js";
 import {
@@ -156,14 +155,47 @@ export async function runNextTask(args: {
     }
   }
 
+  if (!runtime.preflight_checks.browser_use_cli.ok) {
+    task.last_takeover_outcome = "Agent-first execution requires browser-use CLI, but it is unavailable in the current runtime.";
+    task.wait = {
+      wait_reason_code: "BROWSER_USE_CLI_UNAVAILABLE",
+      resume_trigger: "Retry after browser-use CLI is installed and visible in PATH.",
+      resolution_owner: "system",
+      resolution_mode: "auto_resume",
+      evidence_ref: "runs/latest-preflight.json",
+    };
+    task.terminal_class = "outcome_not_confirmed";
+    task.notes.push(task.last_takeover_outcome);
+    updateTaskStatus(task, "RETRYABLE");
+    await saveTask(task);
+    return { task, runtime_ok: true };
+  }
+
+  if (!runtime.preflight_checks.agent_backend.ok) {
+    task.last_takeover_outcome = "Agent-first execution requires a configured agent backend, but the current backend validation failed.";
+    task.wait = {
+      wait_reason_code: "AGENT_BACKEND_UNAVAILABLE",
+      resume_trigger: runtime.preflight_checks.agent_backend.detail,
+      resolution_owner: "system",
+      resolution_mode: "auto_resume",
+      evidence_ref: "runs/latest-preflight.json",
+    };
+    task.terminal_class = "outcome_not_confirmed";
+    task.notes.push(task.last_takeover_outcome);
+    updateTaskStatus(task, "RETRYABLE");
+    await saveTask(task);
+    return { task, runtime_ok: true };
+  }
+
   task.escalation_level = "scout";
   task.phase_history.push("scout");
   await acquireBrowserOwnership("scout", task.id);
 
   let scoutArtifactPath = getArtifactFilePath(task.id, "scout");
   let effectiveTargetUrl = task.target_url;
+  let scoutResult;
   try {
-    const scoutResult = await runLightweightScout({ runtime, task });
+    scoutResult = await runLightweightScout({ runtime, task });
     await writeJsonFile(scoutArtifactPath, scoutResult);
     task.latest_artifacts.push(scoutArtifactPath);
     task.notes.push(scoutResult.surface_summary);
@@ -203,80 +235,22 @@ export async function runNextTask(args: {
   const takeoverArtifacts: string[] = [];
   const takeoverNotes: string[] = [];
 
-  task.phase_history.push("takeover:probe");
-  await acquireBrowserOwnership("probe:playwright", task.id);
+  task.phase_history.push("takeover:agent-loop");
+  await acquireBrowserOwnership("takeover:agent-loop", task.id);
 
-  let probeResult;
+  let agentLoopResult;
   try {
-    probeResult = await runPlaywrightUltraLightProbe({
+    agentLoopResult = await runAgentDrivenBrowserUseLoop({
       runtime,
       task: takeoverTask,
+      scout: scoutResult,
     });
   } finally {
     await releaseBrowserOwnership();
   }
 
-  if (probeResult.takeover_result) {
-    const takeoverResult = probeResult.takeover_result;
-    task.last_takeover_outcome = takeoverResult.detail;
-    appendUnique(task.latest_artifacts, takeoverResult.artifact_refs);
-    if (takeoverResult.wait) {
-      task.wait = takeoverResult.wait;
-    }
-    task.terminal_class = takeoverResult.terminal_class;
-    task.skip_reason_code = takeoverResult.skip_reason_code;
-    task.notes.push(takeoverResult.detail);
-
-    if (takeoverResult.playbook) {
-      await saveTrajectoryPlaybook(takeoverResult.playbook);
-      task.trajectory_playbook_ref = task.hostname;
-    }
-
-    updateTaskStatus(task, takeoverResult.next_status);
-    await saveTask(task);
-    return { task, runtime_ok: true };
-  }
-
-  if (!probeResult.handoff) {
-    throw new Error("Playwright probe returned neither a final result nor a fallback handoff.");
-  }
-
-  takeoverArtifacts.push(...probeResult.handoff.artifact_refs);
-  takeoverNotes.push(probeResult.handoff.detail);
-
-  if (!runtime.preflight_checks.browser_use_cli.ok) {
-    task.last_takeover_outcome = "browser-use CLI fallback was required but unavailable in the current runtime.";
-    appendUnique(task.latest_artifacts, takeoverArtifacts);
-    task.wait = {
-      wait_reason_code: "BROWSER_USE_CLI_UNAVAILABLE",
-      resume_trigger: "Retry after browser-use CLI becomes available, or improve the Playwright probe path.",
-      resolution_owner: "system",
-      resolution_mode: "auto_resume",
-      evidence_ref: takeoverArtifacts[0] ?? scoutArtifactPath,
-    };
-    task.terminal_class = "outcome_not_confirmed";
-    task.notes.push(...takeoverNotes, task.last_takeover_outcome);
-    updateTaskStatus(task, "RETRYABLE");
-    await saveTask(task);
-    return { task, runtime_ok: true };
-  }
-
-  task.phase_history.push("takeover:browser-use");
-  await acquireBrowserOwnership("takeover:browser-use", task.id);
-
-  let browserUseResult;
-  try {
-    browserUseResult = await runBrowserUseFallback({
-      runtime,
-      task: takeoverTask,
-      handoff: probeResult.handoff,
-    });
-  } finally {
-    await releaseBrowserOwnership();
-  }
-
-  if (browserUseResult.takeover_result) {
-    const takeoverResult = browserUseResult.takeover_result;
+  if (agentLoopResult.takeover_result) {
+    const takeoverResult = agentLoopResult.takeover_result;
     task.last_takeover_outcome = takeoverResult.detail;
     appendUnique(task.latest_artifacts, [...takeoverArtifacts, ...takeoverResult.artifact_refs]);
     if (takeoverResult.wait) {
@@ -290,12 +264,12 @@ export async function runNextTask(args: {
     return { task, runtime_ok: true };
   }
 
-  if (!browserUseResult.handoff) {
-    throw new Error("browser-use CLI fallback returned neither a final result nor a finalization handoff.");
+  if (!agentLoopResult.handoff) {
+    throw new Error("Agent-driven browser-use loop returned neither a final result nor a finalization handoff.");
   }
 
-  takeoverArtifacts.push(...browserUseResult.handoff.artifact_refs);
-  takeoverNotes.push(browserUseResult.handoff.detail);
+  takeoverArtifacts.push(...agentLoopResult.handoff.artifact_refs);
+  takeoverNotes.push(agentLoopResult.handoff.detail);
 
   task.phase_history.push("takeover:finalization");
   await acquireBrowserOwnership("finalization:playwright", task.id);
@@ -304,7 +278,7 @@ export async function runNextTask(args: {
     const takeoverResult = await runTakeoverFinalization({
       runtime,
       task: takeoverTask,
-      handoff: browserUseResult.handoff,
+      handoff: agentLoopResult.handoff,
     });
 
     task.last_takeover_outcome = takeoverResult.detail;

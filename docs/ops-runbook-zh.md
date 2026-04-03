@@ -56,6 +56,7 @@ curl http://127.0.0.1:9223/json/version
 ```bash
 cd /Volumes/WD1T/outsea/backliner-helper
 export BACKLINK_BROWSER_CDP_URL=http://127.0.0.1:9223
+export OPENAI_API_KEY=...
 pnpm preflight
 ```
 
@@ -76,7 +77,7 @@ pnpm run-next -- \
 
 - `data/backlink-helper/runs/latest-preflight.json`
 
-它当前会检查 4 项：
+它当前会检查 5 项：
 
 1. `cdp_runtime`
    - 是否能访问 `http://.../json/version`
@@ -85,16 +86,21 @@ pnpm run-next -- \
    - 是否能 `connectOverCDP(cdp_url)`
    - 是否能看到已有 page 或新建 page
 3. `browser_use_cli`
-   - 只是检查命令是否在 `PATH`
-   - 当前主链还没有真正调用它，只是确认最终兜底工具存在
-4. `gog`
+   - 检查命令是否在 `PATH`
+   - 这是新站 agent loop 的必需执行器
+4. `agent_backend`
+   - 检查当前 agent backend 配置是否完整
+   - 默认后端是 OpenAI Responses API
+   - 至少要有可用的 API key 环境变量
+5. `gog`
    - 只是检查命令是否在 `PATH`
    - 当前主链还没有把邮箱恢复做完整
 
 注意：
 
 - `runtime.ok` 目前只取决于 `cdp_runtime.ok && playwright.ok`。
-- `browser_use_cli` 和 `gog` 失败不会让 `runtime.ok` 变成 false。
+- 这样做是为了允许“纯 replay 环境”先做浏览器连通性验证。
+- 但对**新站 agent-first 主链**来说，`browser_use_cli.ok` 和 `agent_backend.ok` 也必须通过，否则 `run-next` 会在真正执行前返回 `RETRYABLE`。
 
 ## `run-next` 会做什么
 
@@ -107,9 +113,8 @@ resolveBrowserRuntime
 -> load/create task
 -> replay (if playbook exists)
 -> scout
--> Playwright ultra-light probe
--> browser-use CLI fallback (if needed)
--> Playwright deterministic finalization
+-> agent-driven browser-use CLI loop
+-> Playwright evidence finalization
 -> write task/artifact/playbook
 ```
 
@@ -239,22 +244,31 @@ resolveBrowserRuntime
 
 这些站点现在更适合在 playbook 里标成 `paid_listing`，下次登录后直接跳过。
 
-### 5. browser-use fallback 现在已经在主链里
+### 5. agent-first 主链现在已经接管新站执行
 
-当前 takeover 不是“纯 Playwright 一条路走到黑”，而是：
+当前 takeover 不是“Playwright 先猜简单站”，而是：
 
-- Playwright 先做极轻量探路
-- 如果路径明显，直接填表和提交
-- 如果路径不明显，就升级到 `browser-use CLI`
-- `browser-use CLI` 找到 submit surface 或终态后，再切回 Playwright 做最终截图和状态分类
+- `scout` 只做 reachability、canonical URL、上游健康检查
+- 没有 playbook 的新站点，默认进入 `agent-driven browser-use CLI loop`
+- `browser-use CLI` 由 agent 决策器给出下一步结构化动作
+- agent loop 停止后，再切回 Playwright 做最终截图、状态分类、playbook 规范化
 
 所以如果你看到 `phase_history` 里出现这些值，是正常的：
 
-- `takeover:probe`
-- `takeover:browser-use`
+- `takeover:agent-loop`
 - `takeover:finalization`
 
-### 5. Cloudflare 403 / 525
+### 6. agent backend 没配好时会发生什么
+
+如果你没有设置 `OPENAI_API_KEY`，或者把 `BACKLINER_AGENT_BACKEND` 设成了当前不支持的值，`run-next` 不会硬崩在中途。它会：
+
+- 把 task 标成 `RETRYABLE`
+- 写 `wait_reason_code = AGENT_BACKEND_UNAVAILABLE`
+- 把 preflight 的报错 detail 放进 `resume_trigger`
+
+这类问题先修环境，不要先怀疑目录站。
+
+### 7. Cloudflare 403 / 525
 
 像 `aitoolsdirectory.com` 这种站，问题可能根本不在表单识别，而在目标站自己的可用性：
 
