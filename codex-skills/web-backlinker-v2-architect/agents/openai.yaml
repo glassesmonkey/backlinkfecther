@@ -1,0 +1,6 @@
+interface:
+  display_name: "Web Backlinker V2 Architect"
+  short_description: "守住 Web Backlinker V2 的架构边界"
+  default_prompt: "Use $web-backlinker-v2-architect to design, implement, or review Web Backlinker V2 without breaking its architectural invariants."
+policy:
+  allow_implicit_invocation: false

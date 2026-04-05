@@ -17,7 +17,7 @@
 - `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-prepare.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-finalize.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/shared/preflight.ts`
-- `/Users/gc/.codex/skills/web-backlinker-v2-operator/SKILL.md`
+- `/Volumes/WD1T/outsea/backliner-helper/codex-skills/web-backlinker-v2-operator/SKILL.md`
 
 ## 这是什么
 
@@ -28,9 +28,23 @@ Backliner Helper 现在是一个 **单站点、严格串行、定时触发** 的
 - `skill`
   - `web-backlinker-v2-architect` 负责架构守门。
   - `web-backlinker-v2-operator` 负责实际运行协议，由 Codex/OpenClaw 会话驱动 `browser-use CLI`。
+- `codex-skills/`
+  - 是这两个 skill 的唯一源码位置。
+  - `$CODEX_HOME/skills` 只是运行时安装副本，不再手工维护。
 
 当前这份 README 和 `docs/` 下文档是**实现层唯一真相源**。  
 skill 不再复制完整运行细节，只负责入口和约束。
+
+## Skill 源码管理
+
+从现在开始，skill 的正确维护流程固定为：
+
+1. 修改 repo 内的 `codex-skills/`
+2. 运行 `pnpm validate-skills`
+3. 运行 `pnpm sync-skills`
+
+不要把 `/Users/gc/.codex/skills/web-backlinker-v2-*` 当成源码目录直接手改。  
+那些目录只是安装产物，用来给 Codex/OpenClaw 实际加载。
 
 ## 调用链
 
@@ -151,6 +165,28 @@ pnpm task-finalize -- --task-id demo-futuretools
   - task / artifact / playbook / account registry / credential vault 落盘
 - `src/shared/`
   - shared CDP runtime、preflight、Playwright session、邮箱与 `gog` helper
+- `codex-skills/`
+  - `web-backlinker-v2-architect` 和 `web-backlinker-v2-operator` 的 repo 内源码
+
+## Skill 命令
+
+```bash
+pnpm validate-skills
+pnpm validate-skills --installed
+pnpm sync-skills
+pnpm diff-skills
+```
+
+用途：
+
+- `validate-skills`
+  - 校验 repo 内 skill source 的结构和 frontmatter
+- `validate-skills --installed`
+  - 连同 `$CODEX_HOME/skills` 下的安装副本一起校验
+- `sync-skills`
+  - 把 repo 内 skill source 覆盖同步到 `$CODEX_HOME/skills`
+- `diff-skills`
+  - 对比 repo source 和已安装 skill 是否漂移
 
 ## 先看哪份文档
 

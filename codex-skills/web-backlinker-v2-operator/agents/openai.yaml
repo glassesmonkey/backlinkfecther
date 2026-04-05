@@ -1,0 +1,6 @@
+interface:
+  display_name: "Web Backlinker V2 Operator"
+  short_description: "运行单站点 bounded worker"
+  default_prompt: "Use $web-backlinker-v2-operator to claim one queued backlink task, drive browser-use CLI in the current Codex session, and finalize the result without relying on an external API backend."
+policy:
+  allow_implicit_invocation: false

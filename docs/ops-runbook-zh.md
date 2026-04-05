@@ -60,6 +60,29 @@ pnpm preflight
 - 提前让 `gog` 完成邮箱授权
 - 继续复用单独的 Chrome profile，不要连日常主力浏览器
 
+## Skill 源码和安装副本
+
+当前项目已经把 skill 源码收回 repo：
+
+- repo source：`/Volumes/WD1T/outsea/backliner-helper/codex-skills/`
+- runtime install：`/Users/gc/.codex/skills/`
+
+运行规则固定为：
+
+- 改 skill 时只改 repo source
+- 改完先跑 `pnpm validate-skills`
+- 再跑 `pnpm sync-skills`
+- 不把 `/Users/gc/.codex/skills/web-backlinker-v2-*` 当成常规源码目录
+
+常用命令：
+
+```bash
+pnpm validate-skills
+pnpm validate-skills --installed
+pnpm sync-skills
+pnpm diff-skills
+```
+
 ## 当前生产主链
 
 ```text

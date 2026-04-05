@@ -13,7 +13,10 @@
     "task-prepare": "pnpm build && node dist/cli/index.js task-prepare",
     "task-record-agent-trace": "pnpm build && node dist/cli/index.js task-record-agent-trace",
     "task-finalize": "pnpm build && node dist/cli/index.js task-finalize",
-    "run-next": "pnpm build && node dist/cli/index.js run-next"
+    "run-next": "pnpm build && node dist/cli/index.js run-next",
+    "sync-skills": "node scripts/sync-skills.mjs",
+    "validate-skills": "node scripts/validate-skills.mjs",
+    "diff-skills": "node scripts/diff-skills.mjs"
   },
   "dependencies": {
     "playwright": "^1.54.2"

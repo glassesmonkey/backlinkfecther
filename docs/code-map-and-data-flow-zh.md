@@ -227,7 +227,10 @@ worker lease 和 browser ownership lock 是两层不同东西：
 
 从这里开始：
 
-- `/Users/gc/.codex/skills/web-backlinker-v2-operator/SKILL.md`
+- `/Volumes/WD1T/outsea/backliner-helper/codex-skills/web-backlinker-v2-operator/SKILL.md`
+
+不要直接把 `/Users/gc/.codex/skills/web-backlinker-v2-operator/` 当源码改。  
+运行时目录只是安装副本，改完 repo source 后要跑 `pnpm sync-skills`。
 
 ## 当前实现和北极星架构的差距
 
