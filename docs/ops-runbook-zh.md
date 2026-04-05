@@ -2,38 +2,35 @@
 
 ## 这份文档解决什么问题
 
-告诉你当前版本应该怎么跑、怎么判断任务结果、以及最常见的环境问题怎么排查。
+告诉你当前版本怎么跑单站点 bounded worker、怎么判断一个任务是否该继续、以及最常见的环境问题怎么排查。
 
 ## 什么时候读
 
 - 想第一次在本机跑通。
-- 想确认外部 Chrome shared CDP 模式该怎么配。
+- 想把它接进 OpenClaw cron。
 - 想看某个任务为什么落到 `WAITING_* / RETRYABLE / SKIPPED`。
 
 ## 最后验证对象
 
-- `/Volumes/WD1T/outsea/backliner-helper/src/shared/browser-runtime.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/cli/index.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-queue.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-prepare.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-finalize.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/shared/preflight.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/cli/preflight.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/cli/run-next.ts`
 
 ## 运行原则
 
-当前版本优先使用“外部 Chrome + shared CDP”：
+当前版本锁定 5 条运行原则：
 
-- 你自己启动 Chrome。
-- 项目通过 `connectOverCDP()` 连接同一个浏览器。
-- 浏览器 profile、Google 登录态、插件、Cookie 都保留在这个外部 Chrome 里。
+- 一次只处理 **1 个网站任务**
+- 单任务硬上限 **10 分钟**
+- OpenClaw/skill 是入口，不是 repo-native agent backend
+- 新站默认由 Codex 直接驱动 `browser-use CLI`
+- `Playwright` 只保留 `replay + finalization`
 
-这样做的本质目的不是“更炫”，而是：
+## 环境准备
 
-- 登录态可复用。
-- 遇到人工认证时不需要重头开始。
-- 真实目录站更接近手工浏览器环境。
-
-## 启动方式
-
-### Mac 验证通过的启动命令
+### 1. 外部 Chrome
 
 ```bash
 open -na "/Applications/Google Chrome.app" --args \
@@ -43,244 +40,219 @@ open -na "/Applications/Google Chrome.app" --args \
   about:blank
 ```
 
-然后确认 CDP 正常：
+确认 CDP 正常：
 
 ```bash
 curl http://127.0.0.1:9223/json/version
 ```
 
-如果你看到 `Browser` 和 `webSocketDebuggerUrl`，说明浏览器可连。
-
-### 连接项目
+### 2. 环境变量
 
 ```bash
 cd /Volumes/WD1T/outsea/backliner-helper
 export BACKLINK_BROWSER_CDP_URL=http://127.0.0.1:9223
-export OPENAI_API_KEY=...
+export BACKLINER_VAULT_KEY='replace-with-a-stable-secret'
 pnpm preflight
 ```
 
-### 运行单任务
+可选但推荐：
+
+- 提前让 `gog` 完成邮箱授权
+- 继续复用单独的 Chrome profile，不要连日常主力浏览器
+
+## 当前生产主链
+
+```text
+OpenClaw cron
+-> $web-backlinker-v2-operator
+-> claim-next-task
+-> task-prepare
+-> Codex-driven browser-use CLI loop
+-> gog (if needed)
+-> task-record-agent-trace
+-> task-finalize
+-> exit
+```
+
+`run-next` 仍能本地调试，但不是推荐生产入口。
+
+## CLI 原语
+
+### `enqueue-site`
+
+用途：
+
+- 把一个网站任务写成 `READY`
+
+示例：
 
 ```bash
-pnpm run-next -- \
+pnpm enqueue-site -- \
   --task-id demo-futuretools \
   --directory-url https://futuretools.io/ \
   --promoted-url https://exactstatement.com/ \
-  --submitter-email support@exactstatement.com \
+  --submitter-email-base support@exactstatement.com \
   --confirm-submit
 ```
 
-## `preflight` 现在检查什么
+### `claim-next-task`
 
-`pnpm preflight` 会把结果写到：
+用途：
 
-- `data/backlink-helper/runs/latest-preflight.json`
+- 挑出下一个可执行任务
+- 写入 `task-worker-lease.json`
+- 顺手完成最小 reaper
 
-它当前会检查 5 项：
+返回模式：
 
-1. `cdp_runtime`
-   - 是否能访问 `http://.../json/version`
-   - 是否拿到浏览器元信息
-2. `playwright`
-   - 是否能 `connectOverCDP(cdp_url)`
-   - 是否能看到已有 page 或新建 page
-3. `browser_use_cli`
-   - 检查命令是否在 `PATH`
-   - 这是新站 agent loop 的必需执行器
-4. `agent_backend`
-   - 检查当前 agent backend 配置是否完整
-   - 默认后端是 OpenAI Responses API
-   - 至少要有可用的 API key 环境变量
-5. `gog`
-   - 只是检查命令是否在 `PATH`
-   - 当前主链还没有把邮箱恢复做完整
+- `claimed`
+- `idle`
+- `lease_held`
 
-注意：
+### `task-prepare`
 
-- `runtime.ok` 目前只取决于 `cdp_runtime.ok && playwright.ok`。
-- 这样做是为了允许“纯 replay 环境”先做浏览器连通性验证。
-- 但对**新站 agent-first 主链**来说，`browser_use_cli.ok` 和 `agent_backend.ok` 也必须通过，否则 `run-next` 会在真正执行前返回 `RETRYABLE`。
+用途：
 
-## `run-next` 会做什么
+- 做 preflight
+- 尝试 replay
+- 做 scout
+- 修正 canonical URL
+- 给 operator skill 返回：
+  - 是否需要 agent loop
+  - 是否可能是注册型站点
+  - 推荐的 email alias 和 mailbox query
+  - 是否已有可复用站点账号
 
-当前顺序固定是：
+### `task-record-agent-trace`
+
+用途：
+
+- 把 operator skill 产生的浏览器探索 trace 落盘
+- 写入 `{taskId}-agent-loop.json`
+- 写入一个 pending finalization payload，供 `task-finalize` 使用
+
+### `task-finalize`
+
+用途：
+
+- 用 Playwright 连接共享浏览器
+- 做最终截图、结果分类、playbook 规范化
+- 更新 account registry / credential vault
+- 释放 worker lease 和浏览器锁
+
+## 注册型站点怎么跑
+
+当前正式策略：
 
 ```text
-resolveBrowserRuntime
--> runPreflight
--> load/create promoted profile
--> load/create task
--> replay (if playbook exists)
--> scout
--> agent-driven browser-use CLI loop
--> Playwright evidence finalization
--> write task/artifact/playbook
+reuse_site_account
+-> 若无账号则 register_email_account
+-> 用 plus alias 注册
+-> 自动生成站点密码
+-> gog 读取验证码 / magic link
+-> 验证完成
+-> 写 account registry
+-> 写 credential vault
+-> 下次同站优先复用账号
 ```
 
-如果 `scout` 发现页面已经跳转到更稳定的 canonical URL，`run-next` 会先改写 `task.target_url`，再进入 `takeover`。
+边界：
+
+- 允许：
+  - 目录站自己的注册密码
+  - 邮箱验证码
+  - magic link
+  - Google chooser / consent
+- 禁止：
+  - Google 密码输入
+  - 2FA / passkey / 手机确认
+  - CAPTCHA bypass
+  - 付费决策
+
+## `gog` 的角色
+
+`gog` 现在不再只是未来设计，它是注册路线的正式能力。
+
+典型用法：
+
+```bash
+gog gmail messages search "to:name+futuretools@example.com newer_than:7d" --json --results-only --max=1 --include-body --no-input
+```
+
+如果拿到了 message id，再取内容：
+
+```bash
+gog gmail get <messageId> --json --results-only --format=full --no-input
+```
+
+当前 repo 已经提供 `src/shared/gog.ts` 作为 helper 基础，但生产主路径仍由 operator skill 调 `gog`。
 
 ## 怎么读任务结果
 
-### 成功类
-
-- `DONE`
-  - 当前代码基本还没稳定打到这个状态。
-- `WAITING_SITE_RESPONSE`
-  - 已经看到“待审核 / 已收到 / thank you”这类确认文案。
-
-### 自动等待类
+### 自动恢复态
 
 - `WAITING_EXTERNAL_EVENT`
-  - 当前表示“等待邮箱验证 / magic link / confirmation email”。
-  - 设计上应该由 `gog` 自动恢复。
-  - 但当前 repo 里还没有完整的自动恢复 worker。
+  - 等邮箱验证码 / magic link
+- `WAITING_SITE_RESPONSE`
+  - 已提交，等站点审核或发布
 
 ### 审计终态
 
 - `WAITING_POLICY_DECISION`
-  - 碰到 CAPTCHA、付费、赞助、业务策略点。
-  - 这是审计终态，不会自动恢复到 `RUNNING`。
-- `WAITING_MISSING_INPUT`
-  - 表单有必填字段，但当前输入集不够。
-  - 这是审计终态，不会自动恢复到 `RUNNING`。
+  - 付费、赞助、CAPTCHA、业务边界
 - `WAITING_MANUAL_AUTH`
-  - 遇到无人值守不支持的登录或认证。
-  - 这是审计终态，不会自动恢复到 `RUNNING`。
-- `WAITING_SITE_RESPONSE`
-  - 站点已经接单，只是在等审核或发布。
+  - Google 密码、2FA、可疑登录验证等
+- `WAITING_MISSING_INPUT`
+  - 当前输入集不够
 
-### 可重试类
+### 可重试
 
 - `RETRYABLE`
-  - 页面超时、上游 5xx、导航失败、结果无法确认、takeover 自己崩了。
-
-### 终止类
-
-- `SKIPPED`
-  - 当前代码里很少主动落这个状态。
-  - 北极星语义是：已经确定不值得继续自动化。
-
-## OAuth 当前支持边界
-
-先说本质：
-
-- 当前 repo **没有** 通用 OAuth 自动化引擎。
-- 但外部 Chrome profile 模式已经证明，**已有 Google 登录态的受限 OAuth 场景是可走通的**。
-
-当前可成立的前提：
-
-- 外部 Chrome 里已经登录 Google。
-- 目录站的 OAuth 只是账号选择 + consent。
-- 不要求输入密码。
-- 不要求 2FA、验证码、设备确认。
-
-当前不稳定或不支持的情况：
-
-- 要求重新输入 Google 密码。
-- 跳出 2FA / Passkey / 手机确认。
-- 出现 CAPTCHA。
-- OAuth 弹窗、回跳、登录成功确认需要复杂状态恢复。
-
-遇到这些情况，当前运行手册建议直接转成审计终态：
-
-- `WAITING_MANUAL_AUTH`
-- 或 `WAITING_POLICY_DECISION`
+  - 超时
+  - 上游 5xx
+  - `gog` 不可用
+  - 邮件解析失败
+  - 结果无法确认
 
 ## 常见故障排查
 
-### 1. `curl http://127.0.0.1:9222/json/version` 没反应
+### 1. `claim-next-task` 总是返回 `lease_held`
 
-先不要假设是代码坏了。最常见原因是：
+先看：
 
-- 端口被旧 Chrome 占了。
-- `localhost` 和 `127.0.0.1` 指向的不是同一个监听。
+- `data/backlink-helper/runtime/task-worker-lease.json`
+- `data/backlink-helper/runtime/browser-ownership-lock.json`
 
-做法：
+如果 lease 还没过期，说明上一轮 bounded worker 还没释放。  
+如果 lease 已过期，下一次 `claim-next-task` 会自动 reaper，并把旧任务改成 `RETRYABLE + TASK_TIMEOUT`。
 
-- 换干净端口，比如 `9223` 或 `9224`
-- 再重新启动 Chrome
-- 再跑 `pnpm preflight`
+### 2. `task-prepare` 返回 `GOG_UNAVAILABLE`
 
-当前 `preflight` 已经会提示这种 loopback 冲突。
+说明当前任务很可能是注册型站点，但 `gog` 不可用。  
+先修环境，再继续，不要让 agent 先冲到邮箱验证再卡住。
 
-### 2. 旧 headless 浏览器干扰
+### 3. plus alias 被站点拒绝
 
-如果你之前跑过 `pnpm start-browser`，本机可能还残留一个 `9333` 上的 managed browser。  
-当前 resolver 会优先探测外部 Chrome，但如果你显式传了别的 `cdp_url`，还是可能连错对象。
+当前策略是：
 
-建议：
+- 先试 `name+hostname@example.com`
+- 若站点明确拒绝，再回退主邮箱原地址
 
-- 用显式的 `BACKLINK_BROWSER_CDP_URL`
-- 或清掉旧进程后再跑
+不要把 plus alias rejection 误判成“站点不可注册”。
 
-### 3. sticky header 挡住点击
+### 4. 付费页不是提交失败
 
-当前 `takeover` 主要靠可见元素和启发式点击。  
-如果页面顶部 sticky header 覆盖了按钮，常见现象是：
+如果登录后落到：
 
-- 字段都填了
-- 最终按钮没点上
-- 任务落到 `RETRYABLE`
+- `Stripe`
+- `checkout`
+- `listed-now`
+- `submit pay`
 
-这类问题优先去看：
+这不叫“执行器坏了”，而是已经走到了真实业务终点。  
+当前正确处理是 `WAITING_POLICY_DECISION`，并写 casebook/playbook。
 
-- 最新 `*-takeover.png`
-- 最新 `*-takeover.json`
+### 5. `OPENAI_API_KEY` 缺失
 
-### 4. 站点其实是付费页
-
-很多目录站不是“提交失败”，而是“登录成功后进入付费页”。  
-当前运行上应该把它理解成：
-
-- 自动化已经走到真实业务终点
-- 只是业务决策不能自动做
-
-例如：
-
-- `AITopTools`
-- `There’s An AI For That`
-- `AIToolnet`
-
-这些站点现在更适合在 playbook 里标成 `paid_listing`，下次登录后直接跳过。
-
-### 5. agent-first 主链现在已经接管新站执行
-
-当前 takeover 不是“Playwright 先猜简单站”，而是：
-
-- `scout` 只做 reachability、canonical URL、上游健康检查
-- 没有 playbook 的新站点，默认进入 `agent-driven browser-use CLI loop`
-- `browser-use CLI` 由 agent 决策器给出下一步结构化动作
-- agent loop 停止后，再切回 Playwright 做最终截图、状态分类、playbook 规范化
-
-所以如果你看到 `phase_history` 里出现这些值，是正常的：
-
-- `takeover:agent-loop`
-- `takeover:finalization`
-
-### 6. agent backend 没配好时会发生什么
-
-如果你没有设置 `OPENAI_API_KEY`，或者把 `BACKLINER_AGENT_BACKEND` 设成了当前不支持的值，`run-next` 不会硬崩在中途。它会：
-
-- 把 task 标成 `RETRYABLE`
-- 写 `wait_reason_code = AGENT_BACKEND_UNAVAILABLE`
-- 把 preflight 的报错 detail 放进 `resume_trigger`
-
-这类问题先修环境，不要先怀疑目录站。
-
-### 7. Cloudflare 403 / 525
-
-像 `aitoolsdirectory.com` 这种站，问题可能根本不在表单识别，而在目标站自己的可用性：
-
-- Cloudflare challenge
-- 上游 TLS handshake 失败
-- 域名 apex / www 配置不一致
-
-这类站不要先怪执行器，先看目录站是否真的健康。
-
-## 推荐操作习惯
-
-- 始终用单独的 `--user-data-dir`，不要连你的日常主力 Chrome profile。
-- 一次只让一个 writer 操作共享浏览器。
-- 先看 `latest-preflight.json`，再看 task JSON，最后看 artifact JSON 和截图。
-- 看到“已登录但落到付费页”，优先记 casebook 和 playbook，不要继续浪费 token。
+这对当前生产主路径不是硬阻塞。  
+当前生产主路径是 **Codex/OpenClaw 会话驱动**，不是 repo-native API backend。

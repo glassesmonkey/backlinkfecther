@@ -23,21 +23,21 @@
 
 当前实现前提：
 
-- 新站默认走 `scout -> agent-driven browser-use CLI loop -> Playwright finalization`
+- 新站默认走 `claim -> prepare -> scout -> agent-driven browser-use CLI -> finalization`
 - `Playwright replay` 只用于已有高置信 playbook
 - 所以案例册里记录的重点不是“某个探路器成没成功”，而是“这个站最终属于哪一类”
 
 ## 站点总表
 
-| site | entry_url | auth_mode | submit_surface | observed_terminal_class | recommended_playbook_action | last_verified_at | evidence_artifact |
+| site | entry_url | auth_mode | account_reuseable | registration_required | submit_surface | observed_terminal_class | recommended_playbook_action | last_verified_at | evidence_artifact |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `futuretools.io` | `https://futuretools.io/` | `direct_submit` | `https://futuretools.io/submit-a-tool` | `captcha_blocked` | `pause_for_policy_decision` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-futuretools-takeover.json` |
-| `aitoptools.com` | `https://aitoptools.com/` | `google_oauth` | `https://aitoptools.com/account/submit-tool/` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/aitoptools-oauth-manual-test.png` |
-| `theresanaiforthat.com` | `https://theresanaiforthat.com/launch/` | `profile_already_authenticated` | `https://theresanaiforthat.com/launch/` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/taaft-oauth-manual-test.png` |
-| `aitoolnet.com` | `https://www.aitoolnet.com/` | `login_then_paid_flow` | `https://www.aitoolnet.com/submit` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolnet-takeover.json` |
-| `aidirectory.org` | `https://www.aidirectory.org/` | `direct_submit` | `https://www.aidirectory.org/user-submit/` | `outcome_not_confirmed` | `retry_with_better_submit_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aidirectory-takeover.json` |
-| `aisupersmart.com` | `https://www.aisupersmart.com/` | `google_login_required` | `https://www.aisupersmart.com/submit-tool/` | `login_required` | `skip_until_oauth_helper_is_stable` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aisupersmart-takeover.json` |
-| `aitoolsdirectory.com` | `http://aitoolsdirectory.com/` | `none_verified` | `not_reached` | `upstream_5xx` | `skip_until_site_health_recovers` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolsdirectory-scout.json` |
+| `futuretools.io` | `https://futuretools.io/` | `direct_submit` | `no` | `no` | `https://futuretools.io/submit-a-tool` | `captcha_blocked` | `pause_for_policy_decision` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-futuretools-takeover.json` |
+| `aitoptools.com` | `https://aitoptools.com/` | `google_oauth` | `yes` | `optional` | `https://aitoptools.com/account/submit-tool/` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/aitoptools-oauth-manual-test.png` |
+| `theresanaiforthat.com` | `https://theresanaiforthat.com/launch/` | `profile_already_authenticated` | `yes` | `no` | `https://theresanaiforthat.com/launch/` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/taaft-oauth-manual-test.png` |
+| `aitoolnet.com` | `https://www.aitoolnet.com/` | `login_then_paid_flow` | `unknown` | `unknown` | `https://www.aitoolnet.com/submit` | `paid_listing` | `skip_after_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolnet-takeover.json` |
+| `aidirectory.org` | `https://www.aidirectory.org/` | `direct_submit` | `no` | `no` | `https://www.aidirectory.org/user-submit/` | `outcome_not_confirmed` | `retry_with_better_submit_detection` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aidirectory-takeover.json` |
+| `aisupersmart.com` | `https://www.aisupersmart.com/` | `google_login_required` | `yes` | `optional` | `https://www.aisupersmart.com/submit-tool/` | `login_required` | `skip_until_oauth_helper_is_stable` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aisupersmart-takeover.json` |
+| `aitoolsdirectory.com` | `http://aitoolsdirectory.com/` | `none_verified` | `no` | `unknown` | `not_reached` | `upstream_5xx` | `skip_until_site_health_recovers` | `2026-04-01` | `data/backlink-helper/artifacts/exactstatement-aitoolsdirectory-scout.json` |
 
 ## 逐站说明
 

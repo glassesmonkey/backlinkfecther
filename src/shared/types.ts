@@ -48,6 +48,12 @@ export interface SubmissionContext {
   confirm_submit: boolean;
 }
 
+export type AccountAuthMode =
+  | "password_email"
+  | "email_code"
+  | "magic_link"
+  | "google_oauth";
+
 export type TaskStatus =
   | "READY"
   | "RUNNING"
@@ -105,12 +111,48 @@ export interface TaskRecord {
   last_takeover_at?: string;
   last_takeover_outcome?: string;
   trajectory_playbook_ref?: string;
+  account_ref?: string;
+  lease_expires_at?: string;
   terminal_class?: TerminalClass;
   skip_reason_code?: string;
   wait?: WaitMetadata;
   phase_history: string[];
   latest_artifacts: string[];
   notes: string[];
+}
+
+export interface WorkerLease {
+  task_id: string;
+  owner: string;
+  acquired_at: string;
+  expires_at: string;
+}
+
+export interface AccountRecord {
+  hostname: string;
+  email: string;
+  email_alias: string;
+  auth_mode: AccountAuthMode;
+  verified: boolean;
+  login_url?: string;
+  submit_url?: string;
+  credential_ref?: string;
+  created_at: string;
+  last_used_at: string;
+  last_registration_result: string;
+}
+
+export interface CredentialPayload {
+  email: string;
+  password?: string;
+  username?: string;
+}
+
+export interface CredentialVaultRecord {
+  credential_ref: string;
+  encrypted_payload: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PageSnapshot {
@@ -224,6 +266,44 @@ export interface AgentLoopTrace {
   steps: AgentLoopTraceStep[];
 }
 
+export interface ProposedOutcome {
+  next_status: TaskStatus;
+  detail: string;
+  wait?: WaitMetadata;
+  terminal_class?: TerminalClass;
+  skip_reason_code?: string;
+}
+
+export interface TakeoverHandoff {
+  detail: string;
+  artifact_refs: string[];
+  current_url: string;
+  recorded_steps: ReplayStep[];
+  agent_trace_ref: string;
+  agent_backend: string;
+  agent_steps_count: number;
+  proposed_outcome?: ProposedOutcome;
+}
+
+export interface AccountDraft {
+  hostname: string;
+  email: string;
+  email_alias: string;
+  auth_mode: AccountAuthMode;
+  verified: boolean;
+  login_url?: string;
+  submit_url?: string;
+  credential_ref?: string;
+  credential_payload?: CredentialPayload;
+  last_registration_result: string;
+}
+
+export interface AgentTraceEnvelope {
+  trace: AgentLoopTrace;
+  handoff: TakeoverHandoff;
+  account?: AccountDraft;
+}
+
 export type ReplayStep =
   | { action: "goto"; url: string }
   | { action: "wait_for_text"; text: string; timeout_ms?: number }
@@ -280,4 +360,23 @@ export interface TakeoverResult {
   agent_trace_ref?: string;
   agent_backend?: string;
   agent_steps_count?: number;
+}
+
+export interface PrepareResult {
+  mode: "replay_completed" | "ready_for_agent_loop" | "task_stopped";
+  task: TaskRecord;
+  effective_target_url: string;
+  replay_hit: boolean;
+  scout_artifact_ref?: string;
+  scout?: ScoutResult;
+  account_candidate?: AccountRecord;
+  account_credentials?: CredentialPayload;
+  registration_required?: boolean;
+  registration_email_alias?: string;
+  mailbox_query?: string;
+}
+
+export interface FinalizeResult extends TakeoverResult {
+  account_created?: boolean;
+  credential_ref?: string;
 }

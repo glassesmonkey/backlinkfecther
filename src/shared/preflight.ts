@@ -153,8 +153,15 @@ async function checkGog(): Promise<PreflightCheckResult> {
 
 async function checkAgentBackend(): Promise<PreflightCheckResult> {
   const validation = validateAgentBackendConfig();
+  if (!validation.ok) {
+    return {
+      ok: true,
+      detail: `Optional repo-native agent backend is not configured: ${validation.detail}`,
+    };
+  }
+
   return {
-    ok: validation.ok,
+    ok: true,
     detail: validation.detail,
   };
 }

@@ -14,6 +14,7 @@ import {
 } from "../memory/data-store.js";
 import { loadTrajectoryPlaybook, saveTrajectoryPlaybook } from "../memory/trajectory-playbook.js";
 import { resolveBrowserRuntime } from "../shared/browser-runtime.js";
+import { validateAgentBackendConfig } from "../agent/decider.js";
 import { runPreflight } from "../shared/preflight.js";
 import { loadOrCreatePromotedProfile } from "../shared/promoted-profile.js";
 import type { PromotedProfile, TaskRecord, TaskStatus } from "../shared/types.js";
@@ -171,11 +172,12 @@ export async function runNextTask(args: {
     return { task, runtime_ok: true };
   }
 
-  if (!runtime.preflight_checks.agent_backend.ok) {
+  const agentBackendValidation = validateAgentBackendConfig();
+  if (!agentBackendValidation.ok) {
     task.last_takeover_outcome = "Agent-first execution requires a configured agent backend, but the current backend validation failed.";
     task.wait = {
       wait_reason_code: "AGENT_BACKEND_UNAVAILABLE",
-      resume_trigger: runtime.preflight_checks.agent_backend.detail,
+      resume_trigger: agentBackendValidation.detail,
       resolution_owner: "system",
       resolution_mode: "auto_resume",
       evidence_ref: "runs/latest-preflight.json",

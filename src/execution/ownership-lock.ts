@@ -13,6 +13,20 @@ interface OwnershipLock {
   expires_at: string;
 }
 
+export async function loadBrowserOwnership(): Promise<OwnershipLock | undefined> {
+  return readJsonFile<OwnershipLock>(getOwnershipLockPath());
+}
+
+export async function reapExpiredBrowserOwnership(): Promise<boolean> {
+  const existing = await loadBrowserOwnership();
+  if (!existing || new Date(existing.expires_at).getTime() > Date.now()) {
+    return false;
+  }
+
+  await releaseBrowserOwnership();
+  return true;
+}
+
 export async function acquireBrowserOwnership(
   owner: BrowserOwner,
   taskId: string,

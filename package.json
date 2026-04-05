@@ -8,6 +8,11 @@
     "build": "tsc -p tsconfig.json",
     "start-browser": "pnpm build && node dist/cli/index.js start-browser",
     "preflight": "pnpm build && node dist/cli/index.js preflight",
+    "enqueue-site": "pnpm build && node dist/cli/index.js enqueue-site",
+    "claim-next-task": "pnpm build && node dist/cli/index.js claim-next-task",
+    "task-prepare": "pnpm build && node dist/cli/index.js task-prepare",
+    "task-record-agent-trace": "pnpm build && node dist/cli/index.js task-record-agent-trace",
+    "task-finalize": "pnpm build && node dist/cli/index.js task-finalize",
     "run-next": "pnpm build && node dist/cli/index.js run-next"
   },
   "dependencies": {

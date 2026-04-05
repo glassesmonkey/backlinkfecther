@@ -2,52 +2,73 @@
 
 ## 这份文档解决什么问题
 
-告诉你这套系统现在是什么、怎么跑第一条命令、遇到问题先看哪份文档。
+告诉你这套系统现在是什么、主入口到底在哪、第一次该跑哪几个命令。
 
 ## 什么时候读
 
 - 第一次接手这个 repo。
-- 想确认“skill”和“代码”分别负责什么。
-- 想在 Mac 上用外部 Chrome 跑一次真实任务。
+- 想确认 `skill` 和 `repo` 各负责什么。
+- 想在 OpenClaw 或本机把单站点 bounded worker 跑起来。
 
 ## 最后验证对象
 
 - `/Volumes/WD1T/outsea/backliner-helper/src/cli/index.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/run-next.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/agent/decider.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/agent/openai-decider.ts`
-- `/Volumes/WD1T/outsea/backliner-helper/src/shared/browser-runtime.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-queue.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-prepare.ts`
+- `/Volumes/WD1T/outsea/backliner-helper/src/control-plane/task-finalize.ts`
 - `/Volumes/WD1T/outsea/backliner-helper/src/shared/preflight.ts`
+- `/Users/gc/.codex/skills/web-backlinker-v2-operator/SKILL.md`
 
 ## 这是什么
 
-Backliner Helper 采用“双架构”：
+Backliner Helper 现在是一个 **单站点、严格串行、定时触发** 的执行底座。
 
-- `repo 代码` 负责执行。它真的去连接浏览器、跑 `preflight`、侦察目录站、填写表单、更新任务状态、写 artifact。
-- `skill` 负责架构守门。它约束 Codex 后续设计、实现、review 时不要把系统写回一次性脚本。
+- `repo 代码`
+  - 负责任务队列、lease、shared CDP 浏览器连接、replay、scout、finalization、account registry、credential vault、artifact/playbook 落盘。
+- `skill`
+  - `web-backlinker-v2-architect` 负责架构守门。
+  - `web-backlinker-v2-operator` 负责实际运行协议，由 Codex/OpenClaw 会话驱动 `browser-use CLI`。
 
-当前这份 README 和 `docs/` 下文档是实现层唯一主真相源。  
-全局 skill 只负责规则和入口，不再复制完整运行细节。
+当前这份 README 和 `docs/` 下文档是**实现层唯一真相源**。  
+skill 不再复制完整运行细节，只负责入口和约束。
 
 ## 调用链
 
 ```text
-你
- -> repo CLI
- -> shared CDP browser
- -> directory site / gog
+OpenClaw cron
+ -> operator skill
+ -> repo CLI primitives
+ -> shared CDP browser / gog
+ -> directory site
 
 Codex
- -> skill
+ -> operator skill / architect skill
  -> repo docs
  -> repo code
 ```
 
+## 当前主入口
+
+生产路径不是 `run-next`。
+
+当前推荐主入口是：
+
+```text
+OpenClaw cron
+ -> $web-backlinker-v2-operator
+ -> claim-next-task
+ -> task-prepare
+ -> Codex-driven browser-use CLI
+ -> task-record-agent-trace
+ -> task-finalize
+ -> exit
+```
+
+`run-next` 现在只保留为本地调试入口。
+
 ## 最短可运行路径
 
 ### 1. 启动一个外部 Chrome
-
-这是当前最推荐的模式。浏览器由你手动启动，CLI 只去连接它。
 
 ```bash
 open -na "/Applications/Google Chrome.app" --args \
@@ -57,87 +78,105 @@ open -na "/Applications/Google Chrome.app" --args \
   about:blank
 ```
 
-先确认 CDP 真的开出来了：
+确认 CDP 正常：
 
 ```bash
 curl http://127.0.0.1:9223/json/version
 ```
 
-### 2. 让项目连这个浏览器
+### 2. 准备运行环境
 
 ```bash
 cd /Volumes/WD1T/outsea/backliner-helper
 export BACKLINK_BROWSER_CDP_URL=http://127.0.0.1:9223
-export OPENAI_API_KEY=...
+export BACKLINER_VAULT_KEY='replace-with-a-stable-secret'
 pnpm preflight
-```
-
-如果你想改模型或自定义 endpoint，再加这些变量：
-
-```bash
-export BACKLINER_AGENT_MODEL=gpt-5
-export OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-### 3. 跑一个单任务
-
-```bash
-pnpm run-next -- \
-  --task-id demo-futuretools \
-  --directory-url https://futuretools.io/ \
-  --promoted-url https://exactstatement.com/ \
-  --submitter-email support@exactstatement.com \
-  --confirm-submit
 ```
 
 说明：
 
-- 如果不显式设置 `BACKLINK_BROWSER_CDP_URL`，系统会先尝试自动发现外部 Chrome，优先探测 `9222 / 9223 / 9224 / 9229`。
-- `run-next` 是当前最重要的执行入口。它会跑 `preflight -> replay -> scout -> agent-driven browser-use CLI loop -> Playwright finalization -> task/artifact update`。
-- 当前对“新站点”的默认策略是 **agent-first**：
-  - 有高置信 playbook 才直接 replay
-  - 没有 playbook 就进入 `browser-use CLI` 的 agent loop
-  - `Playwright` 只保留 replay 和证据收口
-- 如果 `browser-use CLI` 或 agent backend 没配置好，`run-next` 会在真正执行前把 task 标成 `RETRYABLE`，而不是半路崩掉。
+- `BACKLINER_VAULT_KEY` 用来解密本地凭据库。
+- 当前生产主路径**不要求** `OPENAI_API_KEY`。
+- `gog` 建议提前完成登录授权，因为注册型站点会依赖邮箱验证码 / magic link。
+
+### 3. 手工演练一次单站 worker
+
+先入队：
+
+```bash
+pnpm enqueue-site -- \
+  --task-id demo-futuretools \
+  --directory-url https://futuretools.io/ \
+  --promoted-url https://exactstatement.com/ \
+  --submitter-email-base support@exactstatement.com \
+  --confirm-submit
+```
+
+再 claim 一个任务：
+
+```bash
+pnpm claim-next-task -- --owner local-debug
+```
+
+然后 prepare：
+
+```bash
+pnpm task-prepare -- --task-id demo-futuretools
+```
+
+接下来由 operator skill 或你手工驱动 `browser-use CLI`。  
+跑完后，把 trace 写回：
+
+```bash
+pnpm task-record-agent-trace -- \
+  --task-id demo-futuretools \
+  --payload-file /tmp/demo-futuretools-trace.json
+```
+
+最后做 Playwright 收口：
+
+```bash
+pnpm task-finalize -- --task-id demo-futuretools
+```
 
 ## 当前代码地图
 
 - `src/cli/`
-  - 终端入口。负责解析参数并调用控制面。
+  - 对外命令入口：`enqueue-site`、`claim-next-task`、`task-prepare`、`task-record-agent-trace`、`task-finalize`、`run-next`
 - `src/control-plane/`
-  - 执行编排。负责 `preflight`、task lifecycle、replay/scout/agent loop/finalization 的顺序。
-- `src/agent/`
-  - agent 决策层。负责把浏览器当前状态变成下一步结构化动作。
+  - 单站 bounded worker 的顺序和状态转换
 - `src/execution/`
-  - 具体浏览器动作。包括 `scout`、agent loop 执行器、`replay`、浏览器写锁、最终收口。
+  - replay、scout、browser ownership lock、agent takeover finalization
 - `src/memory/`
-  - 本地 JSON 落盘。包括 task、artifact、playbook、profile 的路径和读写。
+  - task / artifact / playbook / account registry / credential vault 落盘
 - `src/shared/`
-  - 跨模块基础能力。包括 CDP 运行时解析、Playwright 连接、preflight、类型定义。
+  - shared CDP runtime、preflight、Playwright session、邮箱与 `gog` helper
 
 ## 先看哪份文档
 
 | 你现在的问题 | 先看哪份 |
 | --- | --- |
-| 想先跑起来 | [docs/ops-runbook-zh.md](docs/ops-runbook-zh.md) |
-| 想改执行链或浏览器接入 | [docs/code-map-and-data-flow-zh.md](docs/code-map-and-data-flow-zh.md) |
-| 想知道状态、字段、artifact 长什么样 | [docs/contracts-and-states-zh.md](docs/contracts-and-states-zh.md) |
-| 想知道某个目录站之前发生过什么 | [docs/site-casebook-zh.md](docs/site-casebook-zh.md) |
-| 想看北极星架构而不是当前实现 | [technical-architecture-zh.md](technical-architecture-zh.md) 和 [technical-architecture-diagrams-zh.md](technical-architecture-diagrams-zh.md) |
+| 想先跑起来 | [docs/ops-runbook-zh.md](/Volumes/WD1T/outsea/backliner-helper/docs/ops-runbook-zh.md) |
+| 想改 bounded worker 主链 | [docs/code-map-and-data-flow-zh.md](/Volumes/WD1T/outsea/backliner-helper/docs/code-map-and-data-flow-zh.md) |
+| 想知道状态、lease、account、artifact 长什么样 | [docs/contracts-and-states-zh.md](/Volumes/WD1T/outsea/backliner-helper/docs/contracts-and-states-zh.md) |
+| 想知道某个目录站之前发生过什么 | [docs/site-casebook-zh.md](/Volumes/WD1T/outsea/backliner-helper/docs/site-casebook-zh.md) |
+| 想看北极星架构而不是当前实现 | [technical-architecture-zh.md](/Volumes/WD1T/outsea/backliner-helper/technical-architecture-zh.md) 和 [technical-architecture-diagrams-zh.md](/Volumes/WD1T/outsea/backliner-helper/technical-architecture-diagrams-zh.md) |
 
 ## 当前实现边界
 
-- 当前 CLI 已经支持：
-  - 外部 Chrome 优先的 shared CDP 模式
-  - `preflight`
-  - `scout`
-  - `trajectory replay`
-  - `agent-driven browser-use CLI` 主执行链
-  - Playwright evidence finalization
-  - task / artifact / promoted profile 落盘
-- 当前 CLI 还没有稳定支持：
-  - 通用 OAuth 自动化引擎
-  - 完整的 `gog` 自动恢复链
-  - reporter / watchdog CLI
-  - 高置信的 agent trace 到 replay playbook 自动蒸馏
-- 所以请把两份架构稿理解为 `north star`，把这份 README 和 `docs/` 理解为“当前真正在跑的版本”。
+- 当前 repo 已经支持：
+  - 严格串行的单站队列原语
+  - worker lease + 浏览器 ownership lock
+  - 外部 Chrome shared CDP
+  - replay / scout / finalization
+  - account registry
+  - 本地加密 credential vault
+  - 注册型站点的邮箱 alias 策略
+- 当前 repo 还没有完全自动化：
+  - 独立 watchdog 进程
+  - OpenClaw 自动创建调度
+  - 通用 OAuth worker
+  - 完整的 `gog` 自动恢复 runner
+- 所以当前最准确的定位是：
+  - **repo = 可调度的执行底座**
+  - **operator skill = 真正的运行入口**

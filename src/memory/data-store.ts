@@ -1,7 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { TaskRecord } from "../shared/types.js";
+import type {
+  AccountRecord,
+  CredentialVaultRecord,
+  TaskRecord,
+  WorkerLease,
+} from "../shared/types.js";
 
 export const DATA_ROOT = path.resolve(process.cwd(), "data/backlink-helper");
 
@@ -14,6 +19,7 @@ export const DATA_DIRECTORIES = {
   runs: path.join(DATA_ROOT, "runs"),
   runtime: path.join(DATA_ROOT, "runtime"),
   tasks: path.join(DATA_ROOT, "tasks"),
+  vault: path.join(DATA_ROOT, "vault"),
 } as const;
 
 export async function ensureDataDirectories(): Promise<void> {
@@ -64,6 +70,14 @@ export function getOwnershipLockPath(): string {
   return path.join(DATA_DIRECTORIES.runtime, "browser-ownership-lock.json");
 }
 
+export function getWorkerLeasePath(): string {
+  return path.join(DATA_DIRECTORIES.runtime, "task-worker-lease.json");
+}
+
+export function getPendingFinalizePath(taskId: string): string {
+  return path.join(DATA_DIRECTORIES.runtime, `${taskId}-pending-finalize.json`);
+}
+
 export function getPlaybookFilePath(hostname: string): string {
   return path.join(DATA_DIRECTORIES.playbooks, `${hostnameToKey(hostname)}.json`);
 }
@@ -72,10 +86,90 @@ export function getProfileFilePath(hostname: string): string {
   return path.join(DATA_DIRECTORIES.profiles, `${hostnameToKey(hostname)}.json`);
 }
 
+export function getAccountFilePath(hostname: string): string {
+  return path.join(DATA_DIRECTORIES.accounts, `${hostnameToKey(hostname)}.json`);
+}
+
+export function getCredentialFilePath(credentialRef: string): string {
+  return path.join(DATA_DIRECTORIES.vault, `${hostnameToKey(credentialRef)}.json`);
+}
+
 export async function loadTask(taskId: string): Promise<TaskRecord | undefined> {
   return readJsonFile<TaskRecord>(getTaskFilePath(taskId));
 }
 
 export async function saveTask(task: TaskRecord): Promise<void> {
   await writeJsonFile(getTaskFilePath(task.id), task);
+}
+
+export async function listTasks(): Promise<TaskRecord[]> {
+  await mkdir(DATA_DIRECTORIES.tasks, { recursive: true });
+  const entries = await readdir(DATA_DIRECTORIES.tasks, { withFileTypes: true });
+  const tasks = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => readJsonFile<TaskRecord>(path.join(DATA_DIRECTORIES.tasks, entry.name))),
+  );
+
+  return tasks.filter((task): task is TaskRecord => Boolean(task));
+}
+
+export async function loadWorkerLease(): Promise<WorkerLease | undefined> {
+  return readJsonFile<WorkerLease>(getWorkerLeasePath());
+}
+
+export async function saveWorkerLease(lease: WorkerLease): Promise<void> {
+  await writeJsonFile(getWorkerLeasePath(), lease);
+}
+
+export async function clearWorkerLease(): Promise<void> {
+  const leasePath = getWorkerLeasePath();
+  try {
+    await unlink(leasePath);
+  } catch (error) {
+    const typedError = error as NodeJS.ErrnoException;
+    if (typedError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+export async function clearPendingFinalize(taskId: string): Promise<void> {
+  try {
+    await rm(getPendingFinalizePath(taskId), { force: true });
+  } catch (error) {
+    const typedError = error as NodeJS.ErrnoException;
+    if (typedError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+export async function loadAccountRecord(hostname: string): Promise<AccountRecord | undefined> {
+  return readJsonFile<AccountRecord>(getAccountFilePath(hostname));
+}
+
+export async function saveAccountRecord(account: AccountRecord): Promise<void> {
+  await writeJsonFile(getAccountFilePath(account.hostname), account);
+}
+
+export async function loadCredentialRecord(
+  credentialRef: string,
+): Promise<CredentialVaultRecord | undefined> {
+  return readJsonFile<CredentialVaultRecord>(getCredentialFilePath(credentialRef));
+}
+
+export async function saveCredentialRecord(record: CredentialVaultRecord): Promise<void> {
+  await writeJsonFile(getCredentialFilePath(record.credential_ref), record);
+}
+
+export async function deleteCredentialRecord(credentialRef: string): Promise<void> {
+  try {
+    await rm(getCredentialFilePath(credentialRef), { force: true });
+  } catch (error) {
+    const typedError = error as NodeJS.ErrnoException;
+    if (typedError.code !== "ENOENT") {
+      throw error;
+    }
+  }
 }
