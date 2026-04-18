@@ -1,9 +1,11 @@
 const EXPORT_STATE_KEY = "exportState";
+const EXPORT_LOG_KEY = "exportLog";
 const SIM_ORIGIN = "https://sim.3ue.com";
 const SIM_HOME_URL = `${SIM_ORIGIN}/`;
 const PAGE_POLL_INTERVAL_MS = 1000;
 const PAGE_POLL_TIMEOUT_MS = 30000;
 const TRAFFIC_POLL_TIMEOUT_MS = 45000;
+const MAX_LOG_ENTRIES = 120;
 
 let exportState = {
   isRunning: false,
@@ -51,11 +53,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function initializeState() {
-  const stored = await chrome.storage.local.get(EXPORT_STATE_KEY);
+  const stored = await chrome.storage.local.get([EXPORT_STATE_KEY, EXPORT_LOG_KEY]);
   if (stored[EXPORT_STATE_KEY]) {
     exportState = stored[EXPORT_STATE_KEY];
   } else {
     await chrome.storage.local.set({ [EXPORT_STATE_KEY]: exportState });
+  }
+
+  if (!Array.isArray(stored[EXPORT_LOG_KEY])) {
+    await chrome.storage.local.set({ [EXPORT_LOG_KEY]: [] });
   }
 }
 
@@ -74,6 +80,27 @@ async function setExportState(patch, messageType = "EXPORT_PROGRESS") {
   } catch (error) {
     // Popup may be closed; ignore.
   }
+}
+
+async function resetLogs() {
+  await chrome.storage.local.set({ [EXPORT_LOG_KEY]: [] });
+}
+
+async function appendLog(level, message, details = null) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    details
+  };
+
+  console[level === "error" ? "error" : level === "warn" ? "warn" : "log"]("[sim-exporter]", message, details || "");
+
+  const stored = await chrome.storage.local.get(EXPORT_LOG_KEY);
+  const logs = Array.isArray(stored[EXPORT_LOG_KEY]) ? stored[EXPORT_LOG_KEY] : [];
+  logs.push(entry);
+  const trimmed = logs.slice(-MAX_LOG_ENTRIES);
+  await chrome.storage.local.set({ [EXPORT_LOG_KEY]: trimmed });
 }
 
 function isBacklinksPage(urlString) {
@@ -206,10 +233,16 @@ async function runExport(sourceTabId) {
   let trafficTabId = null;
 
   try {
+    await resetLogs();
     const sourceTab = await getTabOrThrow(sourceTabId);
     if (!isBacklinksPage(sourceTab.url)) {
       throw new Error("当前标签页不是 sim.3ue.com 反向链接列表页");
     }
+
+    await appendLog("info", "开始导出任务", {
+      sourceTabId,
+      url: sourceTab.url
+    });
 
     await setExportState({
       isRunning: true,
@@ -226,9 +259,14 @@ async function runExport(sourceTabId) {
 
     const backlinksTab = await createBackgroundTab(sourceTab.url, sourceTabId);
     backlinksTabId = backlinksTab.id;
+    await appendLog("info", "已创建反链后台页", { backlinksTabId });
 
     await waitForTabStatusComplete(backlinksTabId, PAGE_POLL_TIMEOUT_MS);
     const backlinkMap = await collectBacklinks(backlinksTabId);
+    await appendLog("info", "反链采集完成", {
+      uniqueHostCount: backlinkMap.size,
+      rawUrlCount: exportState.rawUrlCount
+    });
 
     await setExportState({
       phase: "reading_traffic",
@@ -239,9 +277,11 @@ async function runExport(sourceTabId) {
 
     const trafficTab = await createBackgroundTab(SIM_HOME_URL, sourceTabId);
     trafficTabId = trafficTab.id;
+    await appendLog("info", "已创建流量后台页", { trafficTabId });
 
     await waitForTabStatusComplete(trafficTabId, PAGE_POLL_TIMEOUT_MS);
     await waitForTrafficShell(trafficTabId);
+    await appendLog("info", "流量后台页已就绪");
 
     const exportedRecords = await collectTrafficRecords(trafficTabId, backlinkMap);
 
@@ -260,12 +300,20 @@ async function runExport(sourceTabId) {
       saveAs: false
     });
 
+    await appendLog("info", "CSV 下载已触发", {
+      exportedCount: exportedRecords.length,
+      filename
+    });
+
     await setExportState({
       isRunning: false,
       phase: "done",
       message: `导出完成，共 ${exportedRecords.length} 条记录`
     }, "EXPORT_DONE");
   } catch (error) {
+    await appendLog("error", "导出失败", {
+      error: error?.message || "未知错误"
+    });
     await setExportState({
       isRunning: false,
       phase: "error",
@@ -323,7 +371,18 @@ async function collectBacklinks(tabId) {
       message: `正在采集第 ${snapshot.currentPage} / ${snapshot.totalPages} 页`
     });
 
+    await appendLog("info", "已采集页面", {
+      page: snapshot.currentPage,
+      totalPages: snapshot.totalPages,
+      pageUrlCount: snapshot.urls.length,
+      rawUrlCount,
+      uniqueHostCount: backlinkMap.size
+    });
+
     if (!snapshot.hasNext) {
+      await appendLog("info", "检测到最后一页", {
+        page: snapshot.currentPage
+      });
       break;
     }
 
@@ -331,11 +390,22 @@ async function collectBacklinks(tabId) {
     await setExportState({
       message: `等待 ${Math.round(waitMs / 1000)} 秒后翻到下一页`
     });
+    await appendLog("info", "准备翻页", {
+      page: snapshot.currentPage,
+      waitMs
+    });
     await sleep(waitMs);
 
-    const clickResult = await executeInTab(tabId, clickNextPageButton, []);
+    let clickResult = await executeInTab(tabId, clickNextPageButton, []);
     if (!clickResult?.clicked) {
-      throw new Error(clickResult?.error || "翻页失败");
+      await appendLog("warn", "第一次翻页未成功", clickResult);
+      await sleep(1500);
+      clickResult = await executeInTab(tabId, clickNextPageButton, []);
+    }
+
+    if (!clickResult?.clicked) {
+      await appendLog("error", "翻页失败", clickResult);
+      throw new Error(formatClickFailure(clickResult));
     }
 
     const currentPage = snapshot.currentPage;
@@ -366,6 +436,10 @@ async function collectTrafficRecords(tabId, backlinkMap) {
   const records = Array.from(backlinkMap.values());
   let skippedCount = 0;
 
+  await appendLog("info", "开始读取流量", {
+    trafficTotal: records.length
+  });
+
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
 
@@ -393,8 +467,21 @@ async function collectTrafficRecords(tabId, backlinkMap) {
           monthlyVisits: traffic.monthlyVisits
         });
       }
+
+      if ((index + 1) % 50 === 0) {
+        await appendLog("info", "流量读取进度", {
+          trafficDone: index + 1,
+          trafficTotal: records.length,
+          exportedCount: exported.length,
+          skippedCount
+        });
+      }
     } catch (error) {
       skippedCount += 1;
+      await appendLog("warn", "跳过域名", {
+        hostname: record.hostname,
+        reason: error?.message || "流量读取失败"
+      });
       await setExportState({
         skippedCount,
         message: `跳过 ${record.hostname}，原因：${error?.message || "流量读取失败"}`
@@ -415,6 +502,29 @@ async function collectTrafficRecords(tabId, backlinkMap) {
   });
 
   return exported;
+}
+
+function formatClickFailure(clickResult) {
+  const diagnostics = clickResult?.diagnostics || {};
+  const parts = [clickResult?.error || "翻页失败"];
+
+  if (diagnostics.href) {
+    parts.push(`href=${diagnostics.href}`);
+  }
+  if (diagnostics.title) {
+    parts.push(`title=${diagnostics.title}`);
+  }
+  if (diagnostics.pagerValue || diagnostics.pagerText) {
+    parts.push(`pager=${diagnostics.pagerValue || "-"}${diagnostics.pagerText || ""}`);
+  }
+  if (typeof diagnostics.linkCount === "number") {
+    parts.push(`links=${diagnostics.linkCount}`);
+  }
+  if (diagnostics.routeOk === false) {
+    parts.push("页面已离开反向链接页");
+  }
+
+  return parts.join(" | ");
 }
 
 function getBacklinksPageSnapshot() {
@@ -444,20 +554,84 @@ function getBacklinksPageSnapshot() {
   };
 }
 
-function clickNextPageButton() {
-  const nextButton = document.querySelector("li.ant-pagination-next");
+async function clickNextPageButton() {
+  function collectDiagnostics() {
+    const pagerInput = document.querySelector("li.ant-pagination-simple-pager input");
+    const pagerText = document.querySelector("li.ant-pagination-simple-pager")?.textContent?.trim() || null;
+    const nextLi = document.querySelector("li.ant-pagination-next, li[title='Next Page']");
+    const pagination = document.querySelector("ul.ant-pagination");
+    return {
+      href: location.href,
+      title: document.title,
+      routeOk: location.hash.includes("/digitalsuite/acquisition/backlinks/table/"),
+      pagerValue: pagerInput?.value || null,
+      pagerText,
+      linkCount: document.querySelectorAll("a.ad-target-url").length,
+      nextExists: Boolean(nextLi),
+      paginationExists: Boolean(pagination),
+      paginationHtml: pagination?.outerHTML?.slice(0, 800) || null,
+      bodySample: (document.body?.innerText || "").slice(0, 300)
+    };
+  }
+
+  function findNextButton() {
+    const selectors = [
+      "li.ant-pagination-next",
+      "li[title='Next Page']",
+      "ul.ant-pagination li.ant-pagination-next"
+    ];
+
+    for (const selector of selectors) {
+      const match = document.querySelector(selector);
+      if (match) {
+        return match;
+      }
+    }
+
+    const pagination = document.querySelector("ul.ant-pagination");
+    if (!pagination) {
+      return null;
+    }
+
+    return Array.from(pagination.querySelectorAll("li")).find((item) => {
+      const title = item.getAttribute("title") || "";
+      const className = item.className || "";
+      return title === "Next Page" || className.includes("ant-pagination-next");
+    }) || null;
+  }
+
+  let nextButton = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    nextButton = findNextButton();
+    if (nextButton) {
+      break;
+    }
+
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
   if (!nextButton) {
-    return { clicked: false, error: "未找到下一页按钮" };
+    return {
+      clicked: false,
+      error: "未找到下一页按钮",
+      diagnostics: collectDiagnostics()
+    };
   }
 
   if (nextButton.getAttribute("aria-disabled") === "true") {
-    return { clicked: false, error: "已经是最后一页" };
+    return {
+      clicked: false,
+      error: "已经是最后一页",
+      diagnostics: collectDiagnostics()
+    };
   }
 
   const target = nextButton.querySelector("button") || nextButton;
   nextButton.scrollIntoView({ block: "center", behavior: "smooth" });
+  await new Promise((resolve) => setTimeout(resolve, 250));
 
-  const eventNames = ["mouseover", "mousedown", "mouseup", "click"];
+  const eventNames = ["pointerover", "mouseover", "pointerdown", "mousedown", "pointerup", "mouseup", "click"];
   for (const eventName of eventNames) {
     target.dispatchEvent(new MouseEvent(eventName, {
       view: window,
@@ -466,7 +640,11 @@ function clickNextPageButton() {
     }));
   }
 
-  return { clicked: true };
+  if (typeof target.click === "function") {
+    target.click();
+  }
+
+  return { clicked: true, diagnostics: collectDiagnostics() };
 }
 
 function didBacklinksPageAdvance(previousPage, previousFirstHref) {

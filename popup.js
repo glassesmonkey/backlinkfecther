@@ -1,4 +1,5 @@
 const EXPORT_STATE_KEY = "exportState";
+const EXPORT_LOG_KEY = "exportLog";
 
 const elements = {
   pageMatch: document.getElementById("page-match"),
@@ -8,12 +9,14 @@ const elements = {
   hostProgress: document.getElementById("host-progress"),
   trafficProgress: document.getElementById("traffic-progress"),
   skippedCount: document.getElementById("skipped-count"),
-  messageText: document.getElementById("message-text")
+  messageText: document.getElementById("message-text"),
+  logOutput: document.getElementById("log-output")
 };
 
 let activeTabId = null;
 let pageMatched = false;
 let currentState = null;
+let currentLogs = [];
 
 function isBacklinksPage(urlString) {
   if (!urlString) {
@@ -93,6 +96,21 @@ function render() {
   setMessage("准备就绪。点击开始导出。");
 }
 
+function formatLogLine(entry) {
+  const time = entry?.timestamp
+    ? new Date(entry.timestamp).toLocaleTimeString("zh-CN", { hour12: false })
+    : "--:--:--";
+  const level = (entry?.level || "info").toUpperCase();
+  const message = entry?.message || "";
+  const details = entry?.details ? ` ${JSON.stringify(entry.details, null, 0)}` : "";
+  return `[${time}] ${level} ${message}${details}`;
+}
+
+function renderLogs() {
+  const lines = currentLogs.slice(-12).map(formatLogLine);
+  elements.logOutput.textContent = lines.length ? lines.join("\n") : "暂无日志";
+}
+
 async function loadActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
@@ -104,6 +122,12 @@ async function loadState() {
   const data = await chrome.storage.local.get(EXPORT_STATE_KEY);
   currentState = data[EXPORT_STATE_KEY] || null;
   render();
+}
+
+async function loadLogs() {
+  const data = await chrome.storage.local.get(EXPORT_LOG_KEY);
+  currentLogs = Array.isArray(data[EXPORT_LOG_KEY]) ? data[EXPORT_LOG_KEY] : [];
+  renderLogs();
 }
 
 async function handleStart() {
@@ -130,12 +154,19 @@ async function handleStart() {
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes[EXPORT_STATE_KEY]) {
+  if (areaName !== "local") {
     return;
   }
 
-  currentState = changes[EXPORT_STATE_KEY].newValue || null;
-  render();
+  if (changes[EXPORT_STATE_KEY]) {
+    currentState = changes[EXPORT_STATE_KEY].newValue || null;
+    render();
+  }
+
+  if (changes[EXPORT_LOG_KEY]) {
+    currentLogs = Array.isArray(changes[EXPORT_LOG_KEY].newValue) ? changes[EXPORT_LOG_KEY].newValue : [];
+    renderLogs();
+  }
 });
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -151,4 +182,9 @@ document.getElementById("start-button").addEventListener("click", handleStart);
 
 Promise.all([loadActiveTab(), loadState()]).catch((error) => {
   setMessage(error.message || "初始化失败。", "error");
+});
+
+loadLogs().catch(() => {
+  currentLogs = [];
+  renderLogs();
 });
