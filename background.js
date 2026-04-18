@@ -330,6 +330,7 @@ async function collectBacklinks(tabId) {
   let previousFirstHref = null;
   let pageGuard = 0;
   let rawUrlCount = 0;
+  let expectedTotalPages = null;
 
   while (true) {
     pageGuard += 1;
@@ -343,6 +344,21 @@ async function collectBacklinks(tabId) {
       [],
       { timeoutMs: PAGE_POLL_TIMEOUT_MS }
     );
+
+    if (expectedTotalPages === null) {
+      expectedTotalPages = snapshot.totalPages;
+      await appendLog("info", "锁定总页数", {
+        totalPages: expectedTotalPages
+      });
+    } else if (snapshot.totalPages !== expectedTotalPages || snapshot.currentPage > expectedTotalPages) {
+      await appendLog("warn", "检测到异常分页，提前结束反链采集", {
+        expectedTotalPages,
+        currentPage: snapshot.currentPage,
+        totalPages: snapshot.totalPages,
+        pageUrlCount: snapshot.urls.length
+      });
+      break;
+    }
 
     for (const href of snapshot.urls) {
       let hostname;
@@ -373,15 +389,16 @@ async function collectBacklinks(tabId) {
 
     await appendLog("info", "已采集页面", {
       page: snapshot.currentPage,
-      totalPages: snapshot.totalPages,
+      totalPages: expectedTotalPages,
       pageUrlCount: snapshot.urls.length,
       rawUrlCount,
       uniqueHostCount: backlinkMap.size
     });
 
-    if (!snapshot.hasNext) {
+    if (!snapshot.hasNext || snapshot.currentPage >= expectedTotalPages) {
       await appendLog("info", "检测到最后一页", {
-        page: snapshot.currentPage
+        page: snapshot.currentPage,
+        totalPages: expectedTotalPages
       });
       break;
     }
@@ -528,15 +545,28 @@ function formatClickFailure(clickResult) {
 }
 
 function getBacklinksPageSnapshot() {
-  const anchors = Array.from(document.querySelectorAll("a.ad-target-url"));
+  function findBacklinksTableWrapper() {
+    const wrappers = Array.from(document.querySelectorAll(".ant-table-wrapper"));
+    return wrappers.find((wrapper) => {
+      const text = (wrapper.textContent || "").replace(/\s+/g, " ").trim();
+      return text.includes("引用页面标题和网址") && wrapper.querySelector("tbody tr a.ad-target-url");
+    }) || null;
+  }
+
+  const wrapper = findBacklinksTableWrapper();
+  if (!wrapper) {
+    return null;
+  }
+
+  const anchors = Array.from(wrapper.querySelectorAll("tbody tr a.ad-target-url"));
   const urls = anchors
     .map((anchor) => anchor.href)
     .filter(Boolean);
 
-  const pagerInput = document.querySelector("li.ant-pagination-simple-pager input");
-  const pagerText = document.querySelector("li.ant-pagination-simple-pager")?.textContent || "";
+  const pagerInput = wrapper.querySelector("li.ant-pagination-simple-pager input");
+  const pagerText = wrapper.querySelector("li.ant-pagination-simple-pager")?.textContent || "";
   const totalPagesMatch = pagerText.match(/\/\s*(\d+)/);
-  const nextButton = document.querySelector("li.ant-pagination-next");
+  const nextButton = wrapper.querySelector("li.ant-pagination-next");
   const currentPage = pagerInput ? Number(pagerInput.value) : null;
   const totalPages = totalPagesMatch ? Number(totalPagesMatch[1]) : null;
 
@@ -556,17 +586,23 @@ function getBacklinksPageSnapshot() {
 
 async function clickNextPageButton() {
   function collectDiagnostics() {
-    const pagerInput = document.querySelector("li.ant-pagination-simple-pager input");
-    const pagerText = document.querySelector("li.ant-pagination-simple-pager")?.textContent?.trim() || null;
-    const nextLi = document.querySelector("li.ant-pagination-next, li[title='Next Page']");
-    const pagination = document.querySelector("ul.ant-pagination");
+    const wrappers = Array.from(document.querySelectorAll(".ant-table-wrapper"));
+    const wrapper = wrappers.find((candidate) => {
+      const text = (candidate.textContent || "").replace(/\s+/g, " ").trim();
+      return text.includes("引用页面标题和网址");
+    }) || null;
+    const pagerInput = wrapper?.querySelector("li.ant-pagination-simple-pager input");
+    const pagerText = wrapper?.querySelector("li.ant-pagination-simple-pager")?.textContent?.trim() || null;
+    const nextLi = wrapper?.querySelector("li.ant-pagination-next, li[title='Next Page']") || null;
+    const pagination = wrapper?.querySelector("ul.ant-pagination") || null;
     return {
       href: location.href,
       title: document.title,
       routeOk: location.hash.includes("/digitalsuite/acquisition/backlinks/table/"),
       pagerValue: pagerInput?.value || null,
       pagerText,
-      linkCount: document.querySelectorAll("a.ad-target-url").length,
+      linkCount: wrapper ? wrapper.querySelectorAll("tbody tr a.ad-target-url").length : 0,
+      tableFound: Boolean(wrapper),
       nextExists: Boolean(nextLi),
       paginationExists: Boolean(pagination),
       paginationHtml: pagination?.outerHTML?.slice(0, 800) || null,
@@ -575,6 +611,15 @@ async function clickNextPageButton() {
   }
 
   function findNextButton() {
+    const wrappers = Array.from(document.querySelectorAll(".ant-table-wrapper"));
+    const wrapper = wrappers.find((candidate) => {
+      const text = (candidate.textContent || "").replace(/\s+/g, " ").trim();
+      return text.includes("引用页面标题和网址") && candidate.querySelector("tbody tr a.ad-target-url");
+    }) || null;
+    if (!wrapper) {
+      return null;
+    }
+
     const selectors = [
       "li.ant-pagination-next",
       "li[title='Next Page']",
@@ -582,13 +627,13 @@ async function clickNextPageButton() {
     ];
 
     for (const selector of selectors) {
-      const match = document.querySelector(selector);
+      const match = wrapper.querySelector(selector);
       if (match) {
         return match;
       }
     }
 
-    const pagination = document.querySelector("ul.ant-pagination");
+    const pagination = wrapper.querySelector("ul.ant-pagination");
     if (!pagination) {
       return null;
     }
@@ -648,15 +693,24 @@ async function clickNextPageButton() {
 }
 
 function didBacklinksPageAdvance(previousPage, previousFirstHref) {
-  const anchors = Array.from(document.querySelectorAll("a.ad-target-url"));
+  const wrappers = Array.from(document.querySelectorAll(".ant-table-wrapper"));
+  const wrapper = wrappers.find((candidate) => {
+    const text = (candidate.textContent || "").replace(/\s+/g, " ").trim();
+    return text.includes("引用页面标题和网址") && candidate.querySelector("tbody tr a.ad-target-url");
+  }) || null;
+  if (!wrapper) {
+    return false;
+  }
+
+  const anchors = Array.from(wrapper.querySelectorAll("tbody tr a.ad-target-url"));
   const urls = anchors
     .map((anchor) => anchor.href)
     .filter(Boolean);
 
-  const pagerInput = document.querySelector("li.ant-pagination-simple-pager input");
-  const pagerText = document.querySelector("li.ant-pagination-simple-pager")?.textContent || "";
+  const pagerInput = wrapper.querySelector("li.ant-pagination-simple-pager input");
+  const pagerText = wrapper.querySelector("li.ant-pagination-simple-pager")?.textContent || "";
   const totalPagesMatch = pagerText.match(/\/\s*(\d+)/);
-  const nextButton = document.querySelector("li.ant-pagination-next");
+  const nextButton = wrapper.querySelector("li.ant-pagination-next");
   const currentPage = pagerInput ? Number(pagerInput.value) : null;
   const totalPages = totalPagesMatch ? Number(totalPagesMatch[1]) : null;
 
