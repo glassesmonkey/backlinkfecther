@@ -470,7 +470,31 @@ function clickNextPageButton() {
 }
 
 function didBacklinksPageAdvance(previousPage, previousFirstHref) {
-  const snapshot = getBacklinksPageSnapshot();
+  const anchors = Array.from(document.querySelectorAll("a.ad-target-url"));
+  const urls = anchors
+    .map((anchor) => anchor.href)
+    .filter(Boolean);
+
+  const pagerInput = document.querySelector("li.ant-pagination-simple-pager input");
+  const pagerText = document.querySelector("li.ant-pagination-simple-pager")?.textContent || "";
+  const totalPagesMatch = pagerText.match(/\/\s*(\d+)/);
+  const nextButton = document.querySelector("li.ant-pagination-next");
+  const currentPage = pagerInput ? Number(pagerInput.value) : null;
+  const totalPages = totalPagesMatch ? Number(totalPagesMatch[1]) : null;
+
+  if (!urls.length || !currentPage || !totalPages) {
+    return false;
+  }
+
+  const snapshot = {
+    urls,
+    rawUrlCount: urls.length,
+    firstHref: urls[0] || null,
+    currentPage,
+    totalPages,
+    hasNext: nextButton ? nextButton.getAttribute("aria-disabled") !== "true" : false
+  };
+
   if (!snapshot) {
     return false;
   }
