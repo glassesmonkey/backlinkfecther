@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Sim Backlinks Exporter",
+  "version": "0.1.0",
+  "description": "Export backlinks from sim.3ue.com to CSV.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://sim.3ue.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
