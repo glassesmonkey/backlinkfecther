@@ -2,6 +2,7 @@ const EXPORT_STATE_KEY = "exportState";
 const EXPORT_LOG_KEY = "exportLog";
 const SIM_ORIGIN = "https://sim.3ue.com";
 const SIM_HOME_URL = `${SIM_ORIGIN}/`;
+const WEBSPY_API_URL = "https://webspy.site/api/similarweb/?domain=";
 const PAGE_POLL_INTERVAL_MS = 1000;
 const PAGE_POLL_TIMEOUT_MS = 30000;
 const TRAFFIC_POLL_TIMEOUT_MS = 45000;
@@ -230,7 +231,6 @@ async function waitForCondition(tabId, func, args, options = {}) {
 
 async function runExport(sourceTabId) {
   let backlinksTabId = null;
-  let trafficTabId = null;
 
   try {
     await resetLogs();
@@ -272,18 +272,14 @@ async function runExport(sourceTabId) {
       phase: "reading_traffic",
       trafficDone: 0,
       trafficTotal: backlinkMap.size,
-      message: "正在读取每个域名的月访问量"
+      message: "正在通过 WebSpy 读取每个域名的月访问量"
     });
 
-    const trafficTab = await createBackgroundTab(SIM_HOME_URL, sourceTabId);
-    trafficTabId = trafficTab.id;
-    await appendLog("info", "已创建流量后台页", { trafficTabId });
+    await appendLog("info", "开始使用 WebSpy API 读取流量", {
+      trafficTotal: backlinkMap.size
+    });
 
-    await waitForTabStatusComplete(trafficTabId, PAGE_POLL_TIMEOUT_MS);
-    await waitForTrafficShell(trafficTabId);
-    await appendLog("info", "流量后台页已就绪");
-
-    const exportedRecords = await collectTrafficRecords(trafficTabId, backlinkMap);
+    const exportedRecords = await collectTrafficRecords(backlinkMap);
 
     await setExportState({
       phase: "exporting",
@@ -321,7 +317,6 @@ async function runExport(sourceTabId) {
     }, "EXPORT_ERROR");
   } finally {
     await closeTab(backlinksTabId);
-    await closeTab(trafficTabId);
   }
 }
 
@@ -439,23 +434,10 @@ async function collectBacklinks(tabId) {
   return backlinkMap;
 }
 
-async function waitForTrafficShell(tabId) {
-  await waitForCondition(
-    tabId,
-    isTrafficShellReady,
-    [],
-    { timeoutMs: PAGE_POLL_TIMEOUT_MS }
-  );
-}
-
-async function collectTrafficRecords(tabId, backlinkMap) {
+async function collectTrafficRecords(backlinkMap) {
   const exported = [];
   const records = Array.from(backlinkMap.values());
   let skippedCount = 0;
-
-  await appendLog("info", "开始读取流量", {
-    trafficTotal: records.length
-  });
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -469,19 +451,13 @@ async function collectTrafficRecords(tabId, backlinkMap) {
     });
 
     try {
-      await executeInTab(tabId, navigateToTrafficPage, [record.hostname]);
-      const traffic = await waitForCondition(
-        tabId,
-        readMonthlyVisitsIfReady,
-        [record.hostname],
-        { timeoutMs: TRAFFIC_POLL_TIMEOUT_MS }
-      );
+      const monthlyVisits = await fetchWebspyMonthlyVisits(record.hostname);
 
-      if (traffic.monthlyVisits > 100) {
+      if (monthlyVisits > 100) {
         exported.push({
           hostname: record.hostname,
           sourceUrl: record.sourceUrl,
-          monthlyVisits: traffic.monthlyVisits
+          monthlyVisits
         });
       }
 
@@ -519,6 +495,60 @@ async function collectTrafficRecords(tabId, backlinkMap) {
   });
 
   return exported;
+}
+
+async function fetchWebspyMonthlyVisits(hostname) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(`${WEBSPY_API_URL}${encodeURIComponent(hostname)}`, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`WebSpy API ${response.status}: ${body.slice(0, 160)}`);
+    }
+
+    const data = await response.json();
+    const visits = parseWebspyVisits(data);
+    if (visits === null) {
+      throw new Error("WebSpy 响应中没有可用的 Visits");
+    }
+
+    return visits;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("WebSpy API 超时");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function parseWebspyVisits(data) {
+  const directVisits = Number(data?.Engagments?.Visits);
+  if (Number.isFinite(directVisits)) {
+    return Math.round(directVisits);
+  }
+
+  const monthly = data?.EstimatedMonthlyVisits;
+  if (monthly && typeof monthly === "object") {
+    const values = Object.values(monthly)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    if (values.length) {
+      return Math.round(values[values.length - 1]);
+    }
+  }
+
+  return null;
 }
 
 function formatClickFailure(clickResult) {

@@ -10,7 +10,8 @@
     "storage"
   ],
   "host_permissions": [
-    "https://sim.3ue.com/*"
+    "https://sim.3ue.com/*",
+    "https://webspy.site/*"
   ],
   "background": {
     "service_worker": "background.js"
