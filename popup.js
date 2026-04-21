@@ -4,6 +4,7 @@ const EXPORT_LOG_KEY = "exportLog";
 const elements = {
   pageMatch: document.getElementById("page-match"),
   startButton: document.getElementById("start-button"),
+  resumeButton: document.getElementById("resume-button"),
   phaseText: document.getElementById("phase-text"),
   pageProgress: document.getElementById("page-progress"),
   hostProgress: document.getElementById("host-progress"),
@@ -16,9 +17,23 @@ const elements = {
 };
 
 let activeTabId = null;
+let activeTabUrl = null;
 let pageMatched = false;
 let currentState = null;
 let currentLogs = [];
+
+function canResumeCurrentTask() {
+  const resumeState = currentState?.resumeState;
+  if (!resumeState?.available || !pageMatched || !activeTabId || currentState?.isRunning) {
+    return false;
+  }
+
+  if (resumeState.sourceUrl && activeTabUrl) {
+    return resumeState.sourceUrl === activeTabUrl;
+  }
+
+  return true;
+}
 
 function isBacklinksPage(urlString) {
   if (!urlString) {
@@ -91,10 +106,13 @@ function formatProviderCooldowns(providerStatus) {
 
 function render() {
   const isRunning = Boolean(currentState?.isRunning);
+  const resumeAvailable = Boolean(currentState?.resumeState?.available);
+  const canResume = canResumeCurrentTask();
   const canStart = pageMatched && !isRunning;
 
   elements.pageMatch.textContent = pageMatched ? "已匹配" : "未匹配";
   elements.startButton.disabled = !canStart;
+  elements.resumeButton.disabled = !canResume;
   elements.phaseText.textContent = formatPhase(currentState?.phase, isRunning);
 
   const currentPage = currentState?.currentPage ?? "-";
@@ -113,7 +131,23 @@ function render() {
   elements.skippedCount.textContent = `${currentState?.skippedCount ?? 0}`;
 
   if (!pageMatched) {
-    setMessage("只支持 sim.3ue.com 反向链接列表页。");
+    setMessage(resumeAvailable ? "切回上次的 sim 反链列表页后，可点击继续任务。" : "只支持 sim.3ue.com 反向链接列表页。");
+    return;
+  }
+
+  if (isRunning) {
+    setMessage(currentState?.message || "导出进行中，请保持浏览器开启。");
+    return;
+  }
+
+  if (resumeAvailable) {
+    const resumeClassName = currentState?.phase === "error" ? "error" : "";
+    if (!canResume && currentState?.resumeState?.sourceUrl) {
+      setMessage("请回到上次启动任务的反链列表页后继续。", resumeClassName);
+      return;
+    }
+
+    setMessage(currentState?.message || "检测到未完成任务，可点击继续任务。", resumeClassName);
     return;
   }
 
@@ -124,11 +158,6 @@ function render() {
 
   if (currentState?.phase === "done") {
     setMessage(currentState.message || "导出完成。", "success");
-    return;
-  }
-
-  if (isRunning) {
-    setMessage(currentState?.message || "导出进行中，请保持浏览器开启。");
     return;
   }
 
@@ -153,6 +182,7 @@ function renderLogs() {
 async function loadActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
+  activeTabUrl = tab?.url ?? null;
   pageMatched = isBacklinksPage(tab?.url);
   render();
 }
@@ -192,6 +222,29 @@ async function handleStart() {
   }
 }
 
+async function handleResume() {
+  if (!canResumeCurrentTask()) {
+    return;
+  }
+
+  elements.resumeButton.disabled = true;
+  setMessage("正在恢复任务...");
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "RESUME_EXPORT",
+      tabId: activeTabId
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "恢复失败");
+    }
+  } catch (error) {
+    setMessage(error.message || "恢复失败。", "error");
+    render();
+  }
+}
+
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
@@ -218,6 +271,7 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 elements.startButton.addEventListener("click", handleStart);
+elements.resumeButton.addEventListener("click", handleResume);
 
 Promise.all([loadActiveTab(), loadState()]).catch((error) => {
   setMessage(error.message || "初始化失败。", "error");

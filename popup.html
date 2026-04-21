@@ -57,7 +57,6 @@
 
       button {
         width: 100%;
-        margin: 14px 0 12px;
         border: 0;
         border-radius: 10px;
         padding: 12px 14px;
@@ -71,6 +70,26 @@
       button:disabled {
         background: #a4b4cb;
         cursor: not-allowed;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 8px;
+        margin: 14px 0 12px;
+      }
+
+      .button-group button {
+        margin: 0;
+      }
+
+      .secondary-button {
+        background: #e7eef8;
+        color: #355070;
+      }
+
+      .secondary-button:disabled {
+        background: #eef2f7;
+        color: #94a3b8;
       }
 
       .hint {
@@ -97,7 +116,10 @@
           <span class="label">当前页</span>
           <span class="value" id="page-match">检测中</span>
         </div>
-        <button id="start-button" disabled>开始导出</button>
+        <div class="button-group">
+          <button id="start-button" disabled>开始导出</button>
+          <button id="resume-button" class="secondary-button" disabled>继续任务</button>
+        </div>
         <div class="status-row">
           <span class="label">状态</span>
           <span class="value" id="phase-text">空闲</span>

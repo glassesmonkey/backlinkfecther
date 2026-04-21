@@ -35,6 +35,93 @@ const TRAFFIC_PROVIDERS = [
   }
 ];
 
+function createEmptyResumeState() {
+  return {
+    available: false,
+    sourceTabId: null,
+    sourceUrl: null,
+    phase: null,
+    trafficDone: 0,
+    trafficTotal: 0,
+    skippedCount: 0,
+    exportedRecords: [],
+    completedHostnames: [],
+    interruptedAt: null
+  };
+}
+
+function normalizeExportedRecords(records) {
+  if (!Array.isArray(records)) {
+    return [];
+  }
+
+  return records
+    .map((record) => ({
+      hostname: String(record?.hostname || "").trim().toLowerCase(),
+      sourceUrl: String(record?.sourceUrl || "").trim(),
+      monthlyVisits: Math.round(Number(record?.monthlyVisits))
+    }))
+    .filter((record) => record.hostname && record.sourceUrl && Number.isFinite(record.monthlyVisits));
+}
+
+function normalizeCompletedHostnames(hostnames) {
+  if (!Array.isArray(hostnames)) {
+    return [];
+  }
+
+  const unique = new Set();
+  for (const hostname of hostnames) {
+    const normalized = String(hostname || "").trim().toLowerCase();
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+
+  return Array.from(unique);
+}
+
+function normalizeResumeState(resumeState) {
+  const normalized = {
+    ...createEmptyResumeState(),
+    ...(resumeState || {})
+  };
+
+  normalized.sourceTabId = Number.isInteger(normalized.sourceTabId) ? normalized.sourceTabId : null;
+  normalized.sourceUrl = normalized.sourceUrl ? String(normalized.sourceUrl) : null;
+  normalized.phase = normalized.phase ? String(normalized.phase) : null;
+  normalized.trafficDone = Math.max(0, Math.floor(Number(normalized.trafficDone) || 0));
+  normalized.trafficTotal = Math.max(0, Math.floor(Number(normalized.trafficTotal) || 0));
+  normalized.skippedCount = Math.max(0, Math.floor(Number(normalized.skippedCount) || 0));
+  normalized.exportedRecords = normalizeExportedRecords(normalized.exportedRecords);
+  normalized.completedHostnames = normalizeCompletedHostnames(normalized.completedHostnames);
+  normalized.interruptedAt = normalized.interruptedAt ? String(normalized.interruptedAt) : null;
+  normalized.available = Boolean(
+    normalized.available
+    || normalized.sourceTabId
+    || normalized.sourceUrl
+    || normalized.completedHostnames.length
+    || normalized.exportedRecords.length
+  );
+
+  return normalized;
+}
+
+function createResumeState(sourceTabId, sourceUrl) {
+  return normalizeResumeState({
+    available: true,
+    sourceTabId,
+    sourceUrl,
+    phase: "collecting_links"
+  });
+}
+
+function updateResumeState(resumeState, patch = {}) {
+  return normalizeResumeState({
+    ...(resumeState || {}),
+    ...patch
+  });
+}
+
 function createEmptyProviderStatusSnapshot() {
   return TRAFFIC_PROVIDERS.reduce((snapshot, provider) => {
     snapshot[provider.id] = {
@@ -61,6 +148,7 @@ let exportState = {
   activeTrafficProvider: null,
   globalCooldownUntil: null,
   providerStatus: createEmptyProviderStatusSnapshot(),
+  resumeState: createEmptyResumeState(),
   message: "空闲"
 };
 
@@ -69,7 +157,7 @@ let activeRun = null;
 initializeState().catch(() => {});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== "START_EXPORT") {
+  if (!message || !["START_EXPORT", "RESUME_EXPORT"].includes(message.type)) {
     return undefined;
   }
 
@@ -84,7 +172,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  activeRun = runExport(tabId)
+  const resumeState = message.type === "RESUME_EXPORT"
+    ? normalizeResumeState(exportState.resumeState)
+    : null;
+
+  if (message.type === "RESUME_EXPORT" && !resumeState.available) {
+    sendResponse({ ok: false, error: "当前没有可继续的任务" });
+    return true;
+  }
+
+  activeRun = runExport(tabId, { resumeState })
     .catch((error) => {
       console.error(error);
     })
@@ -102,11 +199,34 @@ async function initializeState() {
     exportState = {
       ...exportState,
       ...stored[EXPORT_STATE_KEY],
+      resumeState: normalizeResumeState(stored[EXPORT_STATE_KEY]?.resumeState),
       providerStatus: {
         ...createEmptyProviderStatusSnapshot(),
         ...(stored[EXPORT_STATE_KEY]?.providerStatus || {})
       }
     };
+
+    if (exportState.isRunning) {
+      const resumeState = updateResumeState(exportState.resumeState, {
+        available: true,
+        phase: exportState.phase,
+        trafficDone: exportState.trafficDone,
+        trafficTotal: exportState.trafficTotal,
+        skippedCount: exportState.skippedCount,
+        interruptedAt: new Date().toISOString()
+      });
+
+      exportState = {
+        ...exportState,
+        isRunning: false,
+        activeTrafficProvider: null,
+        resumeState,
+        message: resumeState.available
+          ? "上次任务已中断，可点击继续任务。"
+          : "上次任务已中断，请重新开始。"
+      };
+      await chrome.storage.local.set({ [EXPORT_STATE_KEY]: exportState });
+    }
   } else {
     await chrome.storage.local.set({ [EXPORT_STATE_KEY]: exportState });
   }
@@ -555,20 +675,40 @@ async function waitForCondition(tabId, func, args, options = {}) {
   throw new Error("等待页面状态超时");
 }
 
-async function runExport(sourceTabId) {
+async function runExport(sourceTabId, options = {}) {
   let backlinksTabId = null;
   const providerStates = createTrafficProviderStates();
+  const initialResumeState = normalizeResumeState(options.resumeState);
+  const isResumeRun = initialResumeState.available;
+  let resumeState = createEmptyResumeState();
 
   try {
-    await resetLogs();
     const sourceTab = await getTabOrThrow(sourceTabId);
     if (!isBacklinksPage(sourceTab.url)) {
       throw new Error("当前标签页不是 sim.3ue.com 反向链接列表页");
     }
 
-    await appendLog("info", "开始导出任务", {
+    resumeState = isResumeRun
+      ? updateResumeState(initialResumeState, {
+        available: true,
+        sourceTabId,
+        sourceUrl: initialResumeState.sourceUrl || sourceTab.url,
+        interruptedAt: null
+      })
+      : createResumeState(sourceTabId, sourceTab.url);
+
+    if (isResumeRun && initialResumeState.sourceUrl && initialResumeState.sourceUrl !== sourceTab.url) {
+      throw new Error("请回到上次启动任务的反链列表页后再继续");
+    }
+
+    if (!isResumeRun) {
+      await resetLogs();
+    }
+
+    await appendLog("info", isResumeRun ? "继续导出任务" : "开始导出任务", {
       sourceTabId,
-      url: sourceTab.url
+      url: sourceTab.url,
+      resumed: isResumeRun
     });
 
     await setExportState({
@@ -584,7 +724,11 @@ async function runExport(sourceTabId) {
       activeTrafficProvider: null,
       providerStatus: buildProviderStatusSnapshot(providerStates),
       globalCooldownUntil: null,
-      message: "正在创建后台工作页"
+      resumeState: updateResumeState(resumeState, {
+        phase: "collecting_links",
+        interruptedAt: null
+      }),
+      message: isResumeRun ? "正在恢复任务并重新采集反链列表" : "正在创建后台工作页"
     });
 
     const backlinksTab = await createBackgroundTab(sourceTab.url, sourceTabId);
@@ -598,13 +742,20 @@ async function runExport(sourceTabId) {
       rawUrlCount: exportState.rawUrlCount
     });
 
+    resumeState = updateResumeState(resumeState, {
+      phase: "reading_traffic",
+      trafficTotal: backlinkMap.size
+    });
+
     await setExportState({
       phase: "reading_traffic",
-      trafficDone: 0,
+      trafficDone: Math.min(resumeState.completedHostnames.length, backlinkMap.size),
       trafficTotal: backlinkMap.size,
+      skippedCount: resumeState.skippedCount,
       activeTrafficProvider: null,
       providerStatus: buildProviderStatusSnapshot(providerStates),
       globalCooldownUntil: null,
+      resumeState,
       message: "正在通过 Similarweb API 和 WebSpy 读取每个域名的流量"
     });
 
@@ -613,11 +764,25 @@ async function runExport(sourceTabId) {
       providers: TRAFFIC_PROVIDERS.map((provider) => provider.label)
     });
 
-    const exportedRecords = await collectTrafficRecords(backlinkMap, providerStates, sourceTabId);
+    const exportedRecords = await collectTrafficRecords(
+      backlinkMap,
+      providerStates,
+      sourceTabId,
+      resumeState,
+      isResumeRun
+    );
+
+    resumeState = updateResumeState(resumeState, {
+      phase: "exporting",
+      trafficDone: backlinkMap.size,
+      trafficTotal: backlinkMap.size,
+      exportedRecords
+    });
 
     await setExportState({
       phase: "exporting",
       activeTrafficProvider: null,
+      resumeState,
       message: "正在生成 CSV"
     });
 
@@ -640,9 +805,17 @@ async function runExport(sourceTabId) {
       isRunning: false,
       phase: "done",
       activeTrafficProvider: null,
+      resumeState: createEmptyResumeState(),
       message: `导出完成，共 ${exportedRecords.length} 条记录`
     }, "EXPORT_DONE");
   } catch (error) {
+    const nextResumeState = updateResumeState(resumeState, {
+      phase: exportState.phase,
+      trafficDone: exportState.trafficDone,
+      trafficTotal: exportState.trafficTotal,
+      skippedCount: exportState.skippedCount,
+      interruptedAt: new Date().toISOString()
+    });
     await appendLog("error", "导出失败", {
       error: error?.message || "未知错误"
     });
@@ -650,7 +823,10 @@ async function runExport(sourceTabId) {
       isRunning: false,
       phase: "error",
       activeTrafficProvider: null,
-      message: error?.message || "导出失败"
+      resumeState: nextResumeState,
+      message: nextResumeState.available
+        ? `导出失败：${error?.message || "未知错误"}，可点击继续任务。`
+        : (error?.message || "导出失败")
     }, "EXPORT_ERROR");
   } finally {
     await closeTab(backlinksTabId);
@@ -772,20 +948,46 @@ async function collectBacklinks(tabId) {
   return backlinkMap;
 }
 
-async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
-  const exported = [];
+async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId, resumeState, isResumeRun) {
   const records = Array.from(backlinkMap.values());
-  let skippedCount = 0;
+  const availableHostnames = new Set(records.map((record) => record.hostname));
+  const exported = resumeState.exportedRecords.filter((record) => availableHostnames.has(record.hostname));
+  const completedHostnames = new Set(
+    records
+      .map((record) => record.hostname)
+      .filter((hostname) => resumeState.completedHostnames.includes(hostname))
+  );
+  let skippedCount = resumeState.skippedCount;
+  let processedCount = completedHostnames.size;
 
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index];
+  if (isResumeRun && processedCount > 0) {
+    await appendLog("info", "已恢复上次进度", {
+      processedCount,
+      trafficTotal: records.length,
+      exportedCount: exported.length,
+      skippedCount
+    });
+  }
+
+  for (const record of records) {
+    if (completedHostnames.has(record.hostname)) {
+      continue;
+    }
 
     await setExportState(buildTrafficStatePatch(providerStates, {
       phase: "reading_traffic",
-      trafficDone: index,
+      trafficDone: processedCount,
       trafficTotal: records.length,
       skippedCount,
       activeTrafficProvider: null,
+      resumeState: updateResumeState(resumeState, {
+        phase: "reading_traffic",
+        trafficDone: processedCount,
+        trafficTotal: records.length,
+        skippedCount,
+        exportedRecords: exported,
+        completedHostnames: Array.from(completedHostnames)
+      }),
       message: `正在读取 ${record.hostname} 的月访问量`
     }));
 
@@ -793,7 +995,7 @@ async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
       const monthlyVisits = await fetchMonthlyVisitsWithScheduler(
         record.hostname,
         providerStates,
-        index,
+        processedCount,
         records.length,
         sourceTabId
       );
@@ -806,9 +1008,9 @@ async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
         });
       }
 
-      if ((index + 1) % 50 === 0) {
+      if ((processedCount + 1) % 50 === 0) {
         await appendLog("info", "流量读取进度", {
-          trafficDone: index + 1,
+          trafficDone: processedCount + 1,
           trafficTotal: records.length,
           exportedCount: exported.length,
           skippedCount,
@@ -824,14 +1026,34 @@ async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
       await setExportState(buildTrafficStatePatch(providerStates, {
         skippedCount,
         activeTrafficProvider: null,
+        resumeState: updateResumeState(resumeState, {
+          phase: "reading_traffic",
+          trafficDone: processedCount,
+          trafficTotal: records.length,
+          skippedCount,
+          exportedRecords: exported,
+          completedHostnames: Array.from(completedHostnames)
+        }),
         message: `跳过 ${record.hostname}，原因：${error?.message || "流量读取失败"}`
       }));
     }
 
-    await setExportState(buildTrafficStatePatch(providerStates, {
-      trafficDone: index + 1,
+    completedHostnames.add(record.hostname);
+    processedCount += 1;
+    resumeState = updateResumeState(resumeState, {
+      phase: "reading_traffic",
+      trafficDone: processedCount,
       trafficTotal: records.length,
-      skippedCount
+      skippedCount,
+      exportedRecords: exported,
+      completedHostnames: Array.from(completedHostnames)
+    });
+
+    await setExportState(buildTrafficStatePatch(providerStates, {
+      trafficDone: processedCount,
+      trafficTotal: records.length,
+      skippedCount,
+      resumeState
     }));
   }
 
@@ -839,7 +1061,15 @@ async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
     trafficDone: records.length,
     trafficTotal: records.length,
     skippedCount,
-    activeTrafficProvider: null
+    activeTrafficProvider: null,
+    resumeState: updateResumeState(resumeState, {
+      phase: "reading_traffic",
+      trafficDone: records.length,
+      trafficTotal: records.length,
+      skippedCount,
+      exportedRecords: exported,
+      completedHostnames: Array.from(completedHostnames)
+    })
   }));
 
   return exported;
