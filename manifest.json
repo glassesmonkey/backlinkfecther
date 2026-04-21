@@ -11,6 +11,8 @@
   ],
   "host_permissions": [
     "https://sim.3ue.com/*",
+    "https://sem.3ue.com/*",
+    "https://data.similarweb.com/*",
     "https://webspy.site/*"
   ],
   "background": {

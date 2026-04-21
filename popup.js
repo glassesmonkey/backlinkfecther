@@ -8,6 +8,8 @@ const elements = {
   pageProgress: document.getElementById("page-progress"),
   hostProgress: document.getElementById("host-progress"),
   trafficProgress: document.getElementById("traffic-progress"),
+  activeProvider: document.getElementById("active-provider"),
+  providerCooldowns: document.getElementById("provider-cooldowns"),
   skippedCount: document.getElementById("skipped-count"),
   messageText: document.getElementById("message-text"),
   logOutput: document.getElementById("log-output")
@@ -51,6 +53,48 @@ function setMessage(text, className = "") {
   elements.messageText.className = `hint ${className}`.trim();
 }
 
+function formatProviderLabel(providerId) {
+  const labels = {
+    semrush_browser: "SEM",
+    similarweb_browser: "SIM",
+    similarweb_direct: "SW API",
+    webspy: "WebSpy"
+  };
+  return labels[providerId] || providerId || "-";
+}
+
+function formatRemainingSeconds(timestamp) {
+  if (!timestamp) {
+    return "-";
+  }
+
+  const remainingMs = new Date(timestamp).getTime() - Date.now();
+  if (Number.isNaN(remainingMs) || remainingMs <= 0) {
+    return "-";
+  }
+
+  return `${Math.ceil(remainingMs / 1000)}s`;
+}
+
+function formatProviderCooldowns(providerStatus) {
+  const sem = providerStatus?.semrush_browser;
+  const sim = providerStatus?.similarweb_browser;
+  const similarweb = providerStatus?.similarweb_direct;
+  const webspy = providerStatus?.webspy;
+
+  if (!sem && !sim && !similarweb && !webspy) {
+    return "-";
+  }
+
+  const parts = [
+    `SW API ${formatRemainingSeconds(similarweb?.nextReadyAt)}`,
+    `SIM ${formatRemainingSeconds(sim?.nextReadyAt)}`,
+    `WebSpy ${formatRemainingSeconds(webspy?.nextReadyAt)}`,
+    `SEM ${formatRemainingSeconds(sem?.nextReadyAt)}`
+  ];
+  return parts.join(" | ");
+}
+
 function render() {
   const isRunning = Boolean(currentState?.isRunning);
   const canStart = pageMatched && !isRunning;
@@ -70,7 +114,8 @@ function render() {
   const trafficDone = currentState?.trafficDone ?? 0;
   const trafficTotal = currentState?.trafficTotal ?? 0;
   elements.trafficProgress.textContent = `${trafficDone} / ${trafficTotal}`;
-
+  elements.activeProvider.textContent = formatProviderLabel(currentState?.activeTrafficProvider);
+  elements.providerCooldowns.textContent = formatProviderCooldowns(currentState?.providerStatus);
   elements.skippedCount.textContent = `${currentState?.skippedCount ?? 0}`;
 
   if (!pageMatched) {
@@ -178,7 +223,7 @@ chrome.runtime.onMessage.addListener((message) => {
   render();
 });
 
-document.getElementById("start-button").addEventListener("click", handleStart);
+elements.startButton.addEventListener("click", handleStart);
 
 Promise.all([loadActiveTab(), loadState()]).catch((error) => {
   setMessage(error.message || "初始化失败。", "error");
@@ -188,3 +233,7 @@ loadLogs().catch(() => {
   currentLogs = [];
   renderLogs();
 });
+
+setInterval(() => {
+  render();
+}, 1000);

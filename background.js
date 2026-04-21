@@ -2,11 +2,75 @@ const EXPORT_STATE_KEY = "exportState";
 const EXPORT_LOG_KEY = "exportLog";
 const SIM_ORIGIN = "https://sim.3ue.com";
 const SIM_HOME_URL = `${SIM_ORIGIN}/`;
-const WEBSPY_API_URL = "https://webspy.site/api/similarweb/?domain=";
 const PAGE_POLL_INTERVAL_MS = 1000;
 const PAGE_POLL_TIMEOUT_MS = 30000;
-const TRAFFIC_POLL_TIMEOUT_MS = 45000;
 const MAX_LOG_ENTRIES = 120;
+const TRAFFIC_REQUEST_TIMEOUT_MS = 15000;
+const TRAFFIC_PAGE_TIMEOUT_MS = 45000;
+const TRAFFIC_REQUEST_GAP_MIN_MS = 1800;
+const TRAFFIC_REQUEST_GAP_MAX_MS = 3200;
+const TRAFFIC_PROVIDER_MAX_ATTEMPTS = 2;
+const TRAFFIC_RETRY_DELAY_MS = 10000;
+const TRAFFIC_PROVIDER_COOLDOWN_STEPS_MS = [60000, 180000, 420000];
+const TRAFFIC_FAILURES_BEFORE_COOLDOWN = 2;
+const TRAFFIC_SUCCESSES_TO_RELAX_COOLDOWN = 4;
+
+function buildSemrushTrafficUrl(hostname) {
+  return `https://sem.3ue.com/analytics/overview/?q=${encodeURIComponent(hostname)}&protocol=https&searchType=domain`;
+}
+
+function buildSimTrafficUrl(hostname) {
+  return `https://sim.3ue.com/#/digitalsuite/websiteanalysis/overview/website-performance/*/999/3m?webSource=Total&key=${encodeURIComponent(hostname)}`;
+}
+
+function buildSimilarwebDirectUrl(hostname) {
+  return `https://data.similarweb.com/api/v1/data?domain=${encodeURIComponent(hostname)}`;
+}
+
+const TRAFFIC_PROVIDERS = [
+  {
+    id: "similarweb_direct",
+    label: "SW API",
+    mode: "browser",
+    strategy: "json",
+    buildUrl: buildSimilarwebDirectUrl
+  },
+  {
+    id: "similarweb_browser",
+    label: "SIM",
+    mode: "browser",
+    strategy: "metric",
+    buildUrl: buildSimTrafficUrl,
+    metricPattern: "每月访问量\\s+([0-9.,]+\\s*[KMBT]?)"
+  },
+  {
+    id: "webspy",
+    label: "WebSpy",
+    mode: "api",
+    apiUrl: "https://webspy.site/api/similarweb/?domain="
+  },
+  {
+    id: "semrush_browser",
+    label: "SEM",
+    mode: "browser",
+    strategy: "metric",
+    buildUrl: buildSemrushTrafficUrl,
+    metricPattern: "自然流量\\s+([0-9.,]+\\s*[KMBT]?)"
+  }
+];
+
+function createEmptyProviderStatusSnapshot() {
+  return TRAFFIC_PROVIDERS.reduce((snapshot, provider) => {
+    snapshot[provider.id] = {
+      label: provider.label,
+      cooldownUntil: null,
+      nextReadyAt: null,
+      rateLimitHits: 0,
+      lastErrorKind: null
+    };
+    return snapshot;
+  }, {});
+}
 
 let exportState = {
   isRunning: false,
@@ -18,6 +82,9 @@ let exportState = {
   trafficDone: 0,
   trafficTotal: 0,
   skippedCount: 0,
+  activeTrafficProvider: null,
+  globalCooldownUntil: null,
+  providerStatus: createEmptyProviderStatusSnapshot(),
   message: "空闲"
 };
 
@@ -56,7 +123,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function initializeState() {
   const stored = await chrome.storage.local.get([EXPORT_STATE_KEY, EXPORT_LOG_KEY]);
   if (stored[EXPORT_STATE_KEY]) {
-    exportState = stored[EXPORT_STATE_KEY];
+    exportState = {
+      ...exportState,
+      ...stored[EXPORT_STATE_KEY],
+      providerStatus: {
+        ...createEmptyProviderStatusSnapshot(),
+        ...(stored[EXPORT_STATE_KEY]?.providerStatus || {})
+      }
+    };
   } else {
     await chrome.storage.local.set({ [EXPORT_STATE_KEY]: exportState });
   }
@@ -147,6 +221,271 @@ function createCsv(records) {
   return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
 }
 
+function createTrafficProviderStates() {
+  return TRAFFIC_PROVIDERS.map((provider) => ({
+    ...provider,
+    nextAllowedAt: 0,
+    cooldownUntil: null,
+    cooldownLevel: 0,
+    consecutiveRetryableFailures: 0,
+    successStreak: 0,
+    rateLimitHits: 0,
+    lastErrorKind: null,
+    tabId: null
+  }));
+}
+
+function buildProviderStatusSnapshot(providerStates) {
+  const snapshot = createEmptyProviderStatusSnapshot();
+  const now = Date.now();
+
+  for (const providerState of providerStates) {
+    snapshot[providerState.id] = {
+      label: providerState.label,
+      cooldownUntil: providerState.cooldownUntil && providerState.cooldownUntil > now
+        ? new Date(providerState.cooldownUntil).toISOString()
+        : null,
+      nextReadyAt: providerState.nextAllowedAt > now
+        ? new Date(providerState.nextAllowedAt).toISOString()
+        : null,
+      rateLimitHits: providerState.rateLimitHits,
+      lastErrorKind: providerState.lastErrorKind
+    };
+  }
+
+  return snapshot;
+}
+
+function getGlobalCooldownUntil(providerStates) {
+  const now = Date.now();
+  const blockedUntil = providerStates
+    .map((providerState) => providerState.nextAllowedAt)
+    .filter((timestamp) => timestamp > now);
+
+  if (!blockedUntil.length || blockedUntil.length !== providerStates.length) {
+    return null;
+  }
+
+  return new Date(Math.min(...blockedUntil)).toISOString();
+}
+
+function buildTrafficStatePatch(providerStates, patch = {}) {
+  return {
+    ...patch,
+    providerStatus: buildProviderStatusSnapshot(providerStates),
+    globalCooldownUntil: getGlobalCooldownUntil(providerStates)
+  };
+}
+
+function getProviderLabel(providerId) {
+  return TRAFFIC_PROVIDERS.find((provider) => provider.id === providerId)?.label || providerId || "-";
+}
+
+function isProviderReady(providerState, now = Date.now()) {
+  return providerState.nextAllowedAt <= now;
+}
+
+function getReadyProviders(providerStates, attemptsByProvider, now = Date.now()) {
+  return providerStates
+    .filter((providerState) => attemptsByProvider[providerState.id] < TRAFFIC_PROVIDER_MAX_ATTEMPTS)
+    .filter((providerState) => isProviderReady(providerState, now));
+}
+
+function chooseProvider(readyProviders, attemptsByProvider) {
+  if (!readyProviders.length) {
+    return null;
+  }
+
+  const sorted = [...readyProviders].sort((left, right) => {
+    const leftAttempts = attemptsByProvider[left.id];
+    const rightAttempts = attemptsByProvider[right.id];
+
+    if (leftAttempts !== rightAttempts) {
+      return leftAttempts - rightAttempts;
+    }
+
+    if (left.cooldownLevel !== right.cooldownLevel) {
+      return left.cooldownLevel - right.cooldownLevel;
+    }
+
+    if (left.consecutiveRetryableFailures !== right.consecutiveRetryableFailures) {
+      return left.consecutiveRetryableFailures - right.consecutiveRetryableFailures;
+    }
+
+    return TRAFFIC_PROVIDERS.findIndex((provider) => provider.id === left.id)
+      - TRAFFIC_PROVIDERS.findIndex((provider) => provider.id === right.id);
+  });
+
+  return sorted[0];
+}
+
+function getEarliestProviderReadyAt(providerStates, attemptsByProvider) {
+  const blockedProviders = providerStates
+    .filter((providerState) => attemptsByProvider[providerState.id] < TRAFFIC_PROVIDER_MAX_ATTEMPTS)
+    .map((providerState) => providerState.nextAllowedAt)
+    .filter((timestamp) => Number.isFinite(timestamp) && timestamp > Date.now());
+
+  if (!blockedProviders.length) {
+    return null;
+  }
+
+  return Math.min(...blockedProviders);
+}
+
+function getAlternativeProvider(providerStates, currentProviderId, attemptsByProvider) {
+  const now = Date.now();
+
+  return providerStates.find((providerState) => {
+    if (providerState.id === currentProviderId) {
+      return false;
+    }
+
+    if (attemptsByProvider[providerState.id] > 0) {
+      return false;
+    }
+
+    return isProviderReady(providerState, now);
+  }) || null;
+}
+
+function applyProviderCooldown(providerState, reasonKind) {
+  const now = Date.now();
+  const cooldownIndex = Math.min(
+    providerState.cooldownLevel,
+    TRAFFIC_PROVIDER_COOLDOWN_STEPS_MS.length - 1
+  );
+  const cooldownMs = TRAFFIC_PROVIDER_COOLDOWN_STEPS_MS[cooldownIndex];
+  const cooldownUntil = now + cooldownMs;
+
+  providerState.nextAllowedAt = Math.max(providerState.nextAllowedAt, cooldownUntil);
+  providerState.cooldownUntil = providerState.nextAllowedAt;
+  providerState.cooldownLevel = Math.min(
+    providerState.cooldownLevel + 1,
+    TRAFFIC_PROVIDER_COOLDOWN_STEPS_MS.length - 1
+  );
+  providerState.consecutiveRetryableFailures = 0;
+  providerState.successStreak = 0;
+  providerState.lastErrorKind = reasonKind;
+
+  if (reasonKind === "rate_limited") {
+    providerState.rateLimitHits += 1;
+  }
+
+  return cooldownMs;
+}
+
+function applyProviderRetryBackoff(providerState, reasonKind) {
+  providerState.nextAllowedAt = Math.max(
+    providerState.nextAllowedAt,
+    Date.now() + TRAFFIC_RETRY_DELAY_MS
+  );
+  providerState.cooldownUntil = null;
+  providerState.successStreak = 0;
+  providerState.lastErrorKind = reasonKind;
+}
+
+function markProviderSuccess(providerState) {
+  providerState.nextAllowedAt = 0;
+  providerState.cooldownUntil = null;
+  providerState.consecutiveRetryableFailures = 0;
+  providerState.successStreak += 1;
+  providerState.lastErrorKind = null;
+
+  if (
+    providerState.successStreak >= TRAFFIC_SUCCESSES_TO_RELAX_COOLDOWN
+    && providerState.cooldownLevel > 0
+  ) {
+    providerState.cooldownLevel -= 1;
+    providerState.successStreak = 0;
+  }
+}
+
+function classifyTrafficError(error) {
+  if (!error) {
+    return {
+      kind: "unknown",
+      retryable: true,
+      message: "未知错误"
+    };
+  }
+
+  if (error.name === "AbortError") {
+    return {
+      kind: "timeout",
+      retryable: true,
+      message: "请求超时"
+    };
+  }
+
+  const message = error?.message || String(error);
+
+  if (message.includes("页面加载超时") || message.includes("等待页面状态超时")) {
+    return {
+      kind: "timeout",
+      retryable: true,
+      message: "页面加载超时"
+    };
+  }
+
+  if (
+    message.includes("页面中没有找到流量指标")
+    || message.includes("页面中没有读取到 Similarweb JSON 数据")
+  ) {
+    return {
+      kind: "bad_response",
+      retryable: false,
+      message
+    };
+  }
+
+  if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
+    return {
+      kind: "network",
+      retryable: true,
+      message: "Failed to fetch"
+    };
+  }
+
+  return {
+    kind: "unknown",
+    retryable: true,
+    message
+  };
+}
+
+function createFinalTrafficFailure(hostname, attemptsByProvider, lastFailure) {
+  const attemptSummary = TRAFFIC_PROVIDERS
+    .map((provider) => `${provider.label} ${attemptsByProvider[provider.id]} 次`)
+    .join(" / ");
+  const reason = lastFailure?.message || "所有流量源都失败";
+
+  return new Error(`${reason} | ${hostname} | ${attemptSummary}`);
+}
+
+function parseCompactMetricValue(value) {
+  const text = String(value ?? "").replace(/,/g, "").trim();
+  const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*([KMBT]?)/i);
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  const unit = (match[2] || "").toUpperCase();
+  const factors = {
+    "": 1,
+    K: 1000,
+    M: 1000 * 1000,
+    B: 1000 * 1000 * 1000,
+    T: 1000 * 1000 * 1000 * 1000
+  };
+
+  return Math.round(amount * (factors[unit] || 1));
+}
+
 async function getTabOrThrow(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab?.id || !tab.url) {
@@ -167,6 +506,17 @@ async function createBackgroundTab(url, openerTabId) {
   }
 
   return tab;
+}
+
+async function navigateTab(tabId, url) {
+  await chrome.tabs.update(tabId, { url });
+}
+
+async function closeTrafficProviderTabs(providerStates) {
+  for (const providerState of providerStates) {
+    await closeTab(providerState.tabId);
+    providerState.tabId = null;
+  }
 }
 
 async function closeTab(tabId) {
@@ -231,6 +581,7 @@ async function waitForCondition(tabId, func, args, options = {}) {
 
 async function runExport(sourceTabId) {
   let backlinksTabId = null;
+  const providerStates = createTrafficProviderStates();
 
   try {
     await resetLogs();
@@ -254,6 +605,9 @@ async function runExport(sourceTabId) {
       trafficDone: 0,
       trafficTotal: 0,
       skippedCount: 0,
+      activeTrafficProvider: null,
+      providerStatus: buildProviderStatusSnapshot(providerStates),
+      globalCooldownUntil: null,
       message: "正在创建后台工作页"
     });
 
@@ -272,17 +626,22 @@ async function runExport(sourceTabId) {
       phase: "reading_traffic",
       trafficDone: 0,
       trafficTotal: backlinkMap.size,
-      message: "正在通过 WebSpy 读取每个域名的月访问量"
+      activeTrafficProvider: null,
+      providerStatus: buildProviderStatusSnapshot(providerStates),
+      globalCooldownUntil: null,
+      message: "正在通过多来源策略读取每个域名的流量"
     });
 
-    await appendLog("info", "开始使用 WebSpy API 读取流量", {
-      trafficTotal: backlinkMap.size
+    await appendLog("info", "开始读取流量", {
+      trafficTotal: backlinkMap.size,
+      providers: TRAFFIC_PROVIDERS.map((provider) => provider.label)
     });
 
-    const exportedRecords = await collectTrafficRecords(backlinkMap);
+    const exportedRecords = await collectTrafficRecords(backlinkMap, providerStates, sourceTabId);
 
     await setExportState({
       phase: "exporting",
+      activeTrafficProvider: null,
       message: "正在生成 CSV"
     });
 
@@ -304,6 +663,7 @@ async function runExport(sourceTabId) {
     await setExportState({
       isRunning: false,
       phase: "done",
+      activeTrafficProvider: null,
       message: `导出完成，共 ${exportedRecords.length} 条记录`
     }, "EXPORT_DONE");
   } catch (error) {
@@ -313,10 +673,12 @@ async function runExport(sourceTabId) {
     await setExportState({
       isRunning: false,
       phase: "error",
+      activeTrafficProvider: null,
       message: error?.message || "导出失败"
     }, "EXPORT_ERROR");
   } finally {
     await closeTab(backlinksTabId);
+    await closeTrafficProviderTabs(providerStates);
   }
 }
 
@@ -434,7 +796,7 @@ async function collectBacklinks(tabId) {
   return backlinkMap;
 }
 
-async function collectTrafficRecords(backlinkMap) {
+async function collectTrafficRecords(backlinkMap, providerStates, sourceTabId) {
   const exported = [];
   const records = Array.from(backlinkMap.values());
   let skippedCount = 0;
@@ -442,16 +804,23 @@ async function collectTrafficRecords(backlinkMap) {
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
 
-    await setExportState({
+    await setExportState(buildTrafficStatePatch(providerStates, {
       phase: "reading_traffic",
       trafficDone: index,
       trafficTotal: records.length,
       skippedCount,
+      activeTrafficProvider: null,
       message: `正在读取 ${record.hostname} 的月访问量`
-    });
+    }));
 
     try {
-      const monthlyVisits = await fetchWebspyMonthlyVisits(record.hostname);
+      const monthlyVisits = await fetchMonthlyVisitsWithScheduler(
+        record.hostname,
+        providerStates,
+        index,
+        records.length,
+        sourceTabId
+      );
 
       if (monthlyVisits > 100) {
         exported.push({
@@ -466,7 +835,8 @@ async function collectTrafficRecords(backlinkMap) {
           trafficDone: index + 1,
           trafficTotal: records.length,
           exportedCount: exported.length,
-          skippedCount
+          skippedCount,
+          providerStatus: buildProviderStatusSnapshot(providerStates)
         });
       }
     } catch (error) {
@@ -475,34 +845,179 @@ async function collectTrafficRecords(backlinkMap) {
         hostname: record.hostname,
         reason: error?.message || "流量读取失败"
       });
-      await setExportState({
+      await setExportState(buildTrafficStatePatch(providerStates, {
         skippedCount,
+        activeTrafficProvider: null,
         message: `跳过 ${record.hostname}，原因：${error?.message || "流量读取失败"}`
-      });
+      }));
     }
 
-    await setExportState({
+    await setExportState(buildTrafficStatePatch(providerStates, {
       trafficDone: index + 1,
       trafficTotal: records.length,
       skippedCount
-    });
+    }));
   }
 
-  await setExportState({
+  await setExportState(buildTrafficStatePatch(providerStates, {
     trafficDone: records.length,
     trafficTotal: records.length,
-    skippedCount
-  });
+    skippedCount,
+    activeTrafficProvider: null
+  }));
 
   return exported;
 }
 
-async function fetchWebspyMonthlyVisits(hostname) {
+async function fetchMonthlyVisitsWithScheduler(hostname, providerStates, index, totalRecords, sourceTabId) {
+  const attemptsByProvider = TRAFFIC_PROVIDERS.reduce((attempts, provider) => {
+    attempts[provider.id] = 0;
+    return attempts;
+  }, {});
+  let lastFailure = null;
+
+  while (true) {
+    const readyProviders = getReadyProviders(providerStates, attemptsByProvider);
+    const chosenProvider = chooseProvider(readyProviders, attemptsByProvider);
+
+    if (!chosenProvider) {
+      const nextReadyAt = getEarliestProviderReadyAt(providerStates, attemptsByProvider);
+      if (!nextReadyAt) {
+        throw createFinalTrafficFailure(hostname, attemptsByProvider, lastFailure);
+      }
+
+      const waitMs = Math.max(nextReadyAt - Date.now(), 0);
+      const waitSeconds = Math.max(1, Math.ceil(waitMs / 1000));
+
+      await appendLog("warn", "所有流量源都在冷却", {
+        hostname,
+        waitSeconds,
+        providerStatus: buildProviderStatusSnapshot(providerStates)
+      });
+      await setExportState(buildTrafficStatePatch(providerStates, {
+        phase: "reading_traffic",
+        trafficDone: index,
+        trafficTotal: totalRecords,
+        activeTrafficProvider: null,
+        message: `所有流量源都在冷却，等待 ${waitSeconds} 秒后继续`
+      }));
+      await sleep(waitMs);
+      continue;
+    }
+
+    const attemptNumber = attemptsByProvider[chosenProvider.id] + 1;
+    attemptsByProvider[chosenProvider.id] = attemptNumber;
+
+    const requestGapMs = randomDelayMs(TRAFFIC_REQUEST_GAP_MIN_MS, TRAFFIC_REQUEST_GAP_MAX_MS);
+    await setExportState(buildTrafficStatePatch(providerStates, {
+      phase: "reading_traffic",
+      trafficDone: index,
+      trafficTotal: totalRecords,
+      activeTrafficProvider: chosenProvider.id,
+      message: `使用 ${chosenProvider.label} 读取 ${hostname}，第 ${attemptNumber} 次尝试`
+    }));
+    await sleep(requestGapMs);
+
+    const result = await fetchTrafficFromProvider(chosenProvider, hostname, sourceTabId);
+
+    if (result.ok) {
+      markProviderSuccess(chosenProvider);
+      await appendLog("info", "流量读取成功", {
+        hostname,
+        provider: chosenProvider.label,
+        monthlyVisits: result.visits,
+        attempt: attemptNumber
+      });
+      return result.visits;
+    }
+
+    lastFailure = result;
+    if (result.retryable) {
+      chosenProvider.consecutiveRetryableFailures += 1;
+
+      const shouldCooldown = result.kind === "rate_limited"
+        || chosenProvider.consecutiveRetryableFailures >= TRAFFIC_FAILURES_BEFORE_COOLDOWN;
+
+      if (shouldCooldown) {
+        const cooldownMs = applyProviderCooldown(chosenProvider, result.kind);
+        await appendLog("warn", "流量源进入冷却", {
+          hostname,
+          provider: chosenProvider.label,
+          errorKind: result.kind,
+          attempt: attemptNumber,
+          cooldownSeconds: Math.ceil(cooldownMs / 1000)
+        });
+      } else {
+        applyProviderRetryBackoff(chosenProvider, result.kind);
+        await appendLog("warn", "流量源准备重试", {
+          hostname,
+          provider: chosenProvider.label,
+          errorKind: result.kind,
+          attempt: attemptNumber,
+          retryDelaySeconds: Math.ceil(TRAFFIC_RETRY_DELAY_MS / 1000)
+        });
+      }
+    } else {
+      chosenProvider.consecutiveRetryableFailures = 0;
+      chosenProvider.successStreak = 0;
+      chosenProvider.lastErrorKind = result.kind;
+      attemptsByProvider[chosenProvider.id] = TRAFFIC_PROVIDER_MAX_ATTEMPTS;
+    }
+
+    const alternativeProvider = getAlternativeProvider(
+      providerStates,
+      chosenProvider.id,
+      attemptsByProvider
+    );
+
+    if (alternativeProvider) {
+      await appendLog("warn", "当前流量源失败，切换到另一个来源", {
+        hostname,
+        failedProvider: chosenProvider.label,
+        nextProvider: alternativeProvider.label,
+        errorKind: result.kind
+      });
+      await setExportState(buildTrafficStatePatch(providerStates, {
+        phase: "reading_traffic",
+        trafficDone: index,
+        trafficTotal: totalRecords,
+        activeTrafficProvider: alternativeProvider.id,
+        message: `${chosenProvider.label} 失败，准备切换到 ${alternativeProvider.label}`
+      }));
+      continue;
+    }
+
+    const providerTriedCount = Object.values(attemptsByProvider)
+      .filter((count) => count > 0)
+      .length;
+    if (providerTriedCount >= TRAFFIC_PROVIDERS.length) {
+      throw createFinalTrafficFailure(hostname, attemptsByProvider, lastFailure);
+    }
+
+    if (attemptsByProvider[chosenProvider.id] >= TRAFFIC_PROVIDER_MAX_ATTEMPTS) {
+      await appendLog("warn", "当前来源已耗尽重试次数", {
+        hostname,
+        provider: chosenProvider.label,
+        errorKind: result.kind
+      });
+    }
+  }
+}
+
+async function fetchTrafficFromProvider(provider, hostname, sourceTabId) {
+  if (provider.mode === "browser") {
+    return fetchTrafficFromBrowserProvider(provider, hostname, sourceTabId);
+  }
+
+  return fetchTrafficFromApiProvider(provider, hostname);
+}
+
+async function fetchTrafficFromApiProvider(provider, hostname) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), TRAFFIC_REQUEST_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${WEBSPY_API_URL}${encodeURIComponent(hostname)}`, {
+    const response = await fetch(`${provider.apiUrl}${encodeURIComponent(hostname)}`, {
       method: "GET",
       signal: controller.signal,
       headers: {
@@ -512,27 +1027,134 @@ async function fetchWebspyMonthlyVisits(hostname) {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`WebSpy API ${response.status}: ${body.slice(0, 160)}`);
+      if (response.status === 429) {
+        return {
+          ok: false,
+          kind: "rate_limited",
+          retryable: true,
+          message: `${provider.label} 429: ${body.slice(0, 160)}`
+        };
+      }
+
+      if (response.status >= 500) {
+        return {
+          ok: false,
+          kind: "upstream_5xx",
+          retryable: true,
+          message: `${provider.label} ${response.status}: ${body.slice(0, 160)}`
+        };
+      }
+
+      return {
+        ok: false,
+        kind: "client_4xx",
+        retryable: false,
+        message: `${provider.label} ${response.status}: ${body.slice(0, 160)}`
+      };
     }
 
     const data = await response.json();
-    const visits = parseWebspyVisits(data);
+    const visits = parseTrafficVisits(data);
     if (visits === null) {
-      throw new Error("WebSpy 响应中没有可用的 Visits");
+      return {
+        ok: false,
+        kind: "no_visits",
+        retryable: false,
+        message: `${provider.label} 响应中没有可用的 Visits`
+      };
     }
 
-    return visits;
+    return {
+      ok: true,
+      visits
+    };
   } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("WebSpy API 超时");
-    }
-    throw error;
+    const classifiedError = classifyTrafficError(error);
+    return {
+      ok: false,
+      kind: classifiedError.kind,
+      retryable: classifiedError.retryable,
+      message: `${provider.label} ${classifiedError.message}`
+    };
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-function parseWebspyVisits(data) {
+async function ensureTrafficProviderTab(providerState, targetUrl, openerTabId) {
+  if (providerState.tabId) {
+    try {
+      const tab = await getTabOrThrow(providerState.tabId);
+      if (tab.url !== targetUrl) {
+        await navigateTab(providerState.tabId, targetUrl);
+      }
+      return providerState.tabId;
+    } catch (error) {
+      providerState.tabId = null;
+    }
+  }
+
+  const tab = await createBackgroundTab(targetUrl, openerTabId);
+  providerState.tabId = tab.id;
+  return providerState.tabId;
+}
+
+async function fetchTrafficFromBrowserProvider(providerState, hostname, openerTabId) {
+  const targetUrl = providerState.buildUrl(hostname);
+  const tabId = await ensureTrafficProviderTab(providerState, targetUrl, openerTabId);
+  const readStrategy = providerState.strategy || "metric";
+
+  try {
+    await waitForTabStatusComplete(tabId, TRAFFIC_PAGE_TIMEOUT_MS);
+    const snapshot = readStrategy === "json"
+      ? await waitForCondition(
+        tabId,
+        readTrafficJsonDocumentSnapshot,
+        [hostname],
+        {
+          timeoutMs: TRAFFIC_PAGE_TIMEOUT_MS,
+          intervalMs: PAGE_POLL_INTERVAL_MS
+        }
+      )
+      : await waitForCondition(
+        tabId,
+        readTrafficMetricSnapshot,
+        [providerState.metricPattern, hostname],
+        {
+          timeoutMs: TRAFFIC_PAGE_TIMEOUT_MS,
+          intervalMs: PAGE_POLL_INTERVAL_MS
+        }
+      );
+
+    return {
+      ok: true,
+      visits: snapshot.visits
+    };
+  } catch (error) {
+    let message = error?.message || "页面中没有找到流量指标";
+
+    if (message.includes("等待页面状态超时")) {
+      const diagnosticsReader = readStrategy === "json"
+        ? readTrafficJsonPageDiagnostics
+        : readTrafficPageDiagnostics;
+      const baseMessage = readStrategy === "json"
+        ? "页面中没有读取到 Similarweb JSON 数据"
+        : "页面中没有找到流量指标";
+      const diagnostics = await executeInTab(tabId, diagnosticsReader, [hostname]).catch(() => null);
+      message = `${baseMessage}: ${providerState.label}${diagnostics ? ` | ${JSON.stringify(diagnostics)}` : ""}`;
+    }
+
+    const classifiedError = classifyTrafficError(new Error(message));
+    return {
+      ok: false,
+      kind: classifiedError.kind,
+      retryable: classifiedError.retryable,
+      message: `${providerState.label} ${classifiedError.message}`
+    };
+  }
+}
+
+function parseTrafficVisits(data) {
   const directVisits = Number(data?.Engagments?.Visits);
   if (Number.isFinite(directVisits)) {
     return Math.round(directVisits);
@@ -549,6 +1171,146 @@ function parseWebspyVisits(data) {
   }
 
   return null;
+}
+
+function readTrafficMetricSnapshot(metricPattern, hostname) {
+  function parseCompactNumber(rawValue) {
+    const text = String(rawValue ?? "").replace(/,/g, "").trim();
+    const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*([KMBT]?)/i);
+    if (!match) {
+      return null;
+    }
+
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount)) {
+      return null;
+    }
+
+    const unit = (match[2] || "").toUpperCase();
+    const factors = {
+      "": 1,
+      K: 1000,
+      M: 1000 * 1000,
+      B: 1000 * 1000 * 1000,
+      T: 1000 * 1000 * 1000 * 1000
+    };
+
+    return Math.round(amount * (factors[unit] || 1));
+  }
+
+  const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+  if (!bodyText) {
+    return null;
+  }
+
+  const normalizedHostname = String(hostname || "").toLowerCase();
+  const currentUrl = location.href.toLowerCase();
+  const normalizedBodyText = bodyText.toLowerCase();
+  if (!currentUrl.includes(normalizedHostname) || !normalizedBodyText.includes(normalizedHostname)) {
+    return null;
+  }
+
+  const match = bodyText.match(new RegExp(metricPattern, "i"));
+  if (!match) {
+    return null;
+  }
+
+  const visits = parseCompactNumber(match[1]);
+  if (!Number.isFinite(visits)) {
+    return null;
+  }
+
+  return {
+    url: location.href,
+    title: document.title,
+    rawValue: match[1].trim(),
+    visits
+  };
+}
+
+function readTrafficJsonDocumentSnapshot(hostname) {
+  function extractJsonText() {
+    const preText = document.querySelector("pre")?.textContent?.trim();
+    if (preText) {
+      return preText;
+    }
+
+    const bodyText = document.body?.innerText?.trim();
+    if (bodyText) {
+      return bodyText;
+    }
+
+    return document.documentElement?.innerText?.trim() || "";
+  }
+
+  const rawText = extractJsonText();
+  if (!rawText) {
+    return null;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch (error) {
+    return null;
+  }
+
+  const requestedHostname = String(hostname || "").toLowerCase();
+  const responseHostname = String(data?.Domain || data?.domain || "").toLowerCase();
+
+  if (requestedHostname && responseHostname && requestedHostname !== responseHostname) {
+    return null;
+  }
+
+  const directVisits = Number(data?.Engagments?.Visits);
+  if (Number.isFinite(directVisits)) {
+    return {
+      url: location.href,
+      title: document.title,
+      hostname: responseHostname || requestedHostname,
+      visits: Math.round(directVisits)
+    };
+  }
+
+  const monthly = data?.EstimatedMonthlyVisits;
+  if (monthly && typeof monthly === "object") {
+    const values = Object.values(monthly)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+
+    if (values.length) {
+      return {
+        url: location.href,
+        title: document.title,
+        hostname: responseHostname || requestedHostname,
+        visits: Math.round(values[values.length - 1])
+      };
+    }
+  }
+
+  return null;
+}
+
+function readTrafficPageDiagnostics(hostname) {
+  const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+  return {
+    url: location.href,
+    title: document.title,
+    hostname,
+    bodySample: bodyText.slice(0, 300)
+  };
+}
+
+function readTrafficJsonPageDiagnostics(hostname) {
+  const preText = document.querySelector("pre")?.textContent?.trim() || "";
+  const bodyText = document.body?.innerText?.trim() || document.documentElement?.innerText?.trim() || "";
+
+  return {
+    url: location.href,
+    title: document.title,
+    hostname,
+    bodySample: (preText || bodyText).slice(0, 300)
+  };
 }
 
 function formatClickFailure(clickResult) {
