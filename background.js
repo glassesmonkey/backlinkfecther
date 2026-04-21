@@ -15,14 +15,6 @@ const TRAFFIC_PROVIDER_COOLDOWN_STEPS_MS = [60000, 180000, 420000];
 const TRAFFIC_FAILURES_BEFORE_COOLDOWN = 2;
 const TRAFFIC_SUCCESSES_TO_RELAX_COOLDOWN = 4;
 
-function buildSemrushTrafficUrl(hostname) {
-  return `https://sem.3ue.com/analytics/overview/?q=${encodeURIComponent(hostname)}&protocol=https&searchType=domain`;
-}
-
-function buildSimTrafficUrl(hostname) {
-  return `https://sim.3ue.com/#/digitalsuite/websiteanalysis/overview/website-performance/*/999/3m?webSource=Total&key=${encodeURIComponent(hostname)}`;
-}
-
 function buildSimilarwebDirectUrl(hostname) {
   return `https://data.similarweb.com/api/v1/data?domain=${encodeURIComponent(hostname)}`;
 }
@@ -36,26 +28,10 @@ const TRAFFIC_PROVIDERS = [
     buildUrl: buildSimilarwebDirectUrl
   },
   {
-    id: "similarweb_browser",
-    label: "SIM",
-    mode: "browser",
-    strategy: "metric",
-    buildUrl: buildSimTrafficUrl,
-    metricPattern: "每月访问量\\s+([0-9.,]+\\s*[KMBT]?)"
-  },
-  {
     id: "webspy",
     label: "WebSpy",
     mode: "api",
     apiUrl: "https://webspy.site/api/similarweb/?domain="
-  },
-  {
-    id: "semrush_browser",
-    label: "SEM",
-    mode: "browser",
-    strategy: "metric",
-    buildUrl: buildSemrushTrafficUrl,
-    metricPattern: "自然流量\\s+([0-9.,]+\\s*[KMBT]?)"
   }
 ];
 
@@ -629,7 +605,7 @@ async function runExport(sourceTabId) {
       activeTrafficProvider: null,
       providerStatus: buildProviderStatusSnapshot(providerStates),
       globalCooldownUntil: null,
-      message: "正在通过多来源策略读取每个域名的流量"
+      message: "正在通过 Similarweb API 和 WebSpy 读取每个域名的流量"
     });
 
     await appendLog("info", "开始读取流量", {
@@ -1102,46 +1078,29 @@ async function ensureTrafficProviderTab(providerState, targetUrl, openerTabId) {
 async function fetchTrafficFromBrowserProvider(providerState, hostname, openerTabId) {
   const targetUrl = providerState.buildUrl(hostname);
   const tabId = await ensureTrafficProviderTab(providerState, targetUrl, openerTabId);
-  const readStrategy = providerState.strategy || "metric";
 
   try {
     await waitForTabStatusComplete(tabId, TRAFFIC_PAGE_TIMEOUT_MS);
-    const snapshot = readStrategy === "json"
-      ? await waitForCondition(
-        tabId,
-        readTrafficJsonDocumentSnapshot,
-        [hostname],
-        {
-          timeoutMs: TRAFFIC_PAGE_TIMEOUT_MS,
-          intervalMs: PAGE_POLL_INTERVAL_MS
-        }
-      )
-      : await waitForCondition(
-        tabId,
-        readTrafficMetricSnapshot,
-        [providerState.metricPattern, hostname],
-        {
-          timeoutMs: TRAFFIC_PAGE_TIMEOUT_MS,
-          intervalMs: PAGE_POLL_INTERVAL_MS
-        }
-      );
+    const snapshot = await waitForCondition(
+      tabId,
+      readTrafficJsonDocumentSnapshot,
+      [hostname],
+      {
+        timeoutMs: TRAFFIC_PAGE_TIMEOUT_MS,
+        intervalMs: PAGE_POLL_INTERVAL_MS
+      }
+    );
 
     return {
       ok: true,
       visits: snapshot.visits
     };
   } catch (error) {
-    let message = error?.message || "页面中没有找到流量指标";
+    let message = error?.message || "页面中没有读取到 Similarweb JSON 数据";
 
     if (message.includes("等待页面状态超时")) {
-      const diagnosticsReader = readStrategy === "json"
-        ? readTrafficJsonPageDiagnostics
-        : readTrafficPageDiagnostics;
-      const baseMessage = readStrategy === "json"
-        ? "页面中没有读取到 Similarweb JSON 数据"
-        : "页面中没有找到流量指标";
-      const diagnostics = await executeInTab(tabId, diagnosticsReader, [hostname]).catch(() => null);
-      message = `${baseMessage}: ${providerState.label}${diagnostics ? ` | ${JSON.stringify(diagnostics)}` : ""}`;
+      const diagnostics = await executeInTab(tabId, readTrafficJsonPageDiagnostics, [hostname]).catch(() => null);
+      message = `页面中没有读取到 Similarweb JSON 数据: ${providerState.label}${diagnostics ? ` | ${JSON.stringify(diagnostics)}` : ""}`;
     }
 
     const classifiedError = classifyTrafficError(new Error(message));
@@ -1171,61 +1130,6 @@ function parseTrafficVisits(data) {
   }
 
   return null;
-}
-
-function readTrafficMetricSnapshot(metricPattern, hostname) {
-  function parseCompactNumber(rawValue) {
-    const text = String(rawValue ?? "").replace(/,/g, "").trim();
-    const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*([KMBT]?)/i);
-    if (!match) {
-      return null;
-    }
-
-    const amount = Number(match[1]);
-    if (!Number.isFinite(amount)) {
-      return null;
-    }
-
-    const unit = (match[2] || "").toUpperCase();
-    const factors = {
-      "": 1,
-      K: 1000,
-      M: 1000 * 1000,
-      B: 1000 * 1000 * 1000,
-      T: 1000 * 1000 * 1000 * 1000
-    };
-
-    return Math.round(amount * (factors[unit] || 1));
-  }
-
-  const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
-  if (!bodyText) {
-    return null;
-  }
-
-  const normalizedHostname = String(hostname || "").toLowerCase();
-  const currentUrl = location.href.toLowerCase();
-  const normalizedBodyText = bodyText.toLowerCase();
-  if (!currentUrl.includes(normalizedHostname) || !normalizedBodyText.includes(normalizedHostname)) {
-    return null;
-  }
-
-  const match = bodyText.match(new RegExp(metricPattern, "i"));
-  if (!match) {
-    return null;
-  }
-
-  const visits = parseCompactNumber(match[1]);
-  if (!Number.isFinite(visits)) {
-    return null;
-  }
-
-  return {
-    url: location.href,
-    title: document.title,
-    rawValue: match[1].trim(),
-    visits
-  };
 }
 
 function readTrafficJsonDocumentSnapshot(hostname) {
@@ -1289,16 +1193,6 @@ function readTrafficJsonDocumentSnapshot(hostname) {
   }
 
   return null;
-}
-
-function readTrafficPageDiagnostics(hostname) {
-  const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
-  return {
-    url: location.href,
-    title: document.title,
-    hostname,
-    bodySample: bodyText.slice(0, 300)
-  };
 }
 
 function readTrafficJsonPageDiagnostics(hostname) {

@@ -55,8 +55,6 @@ function setMessage(text, className = "") {
 
 function formatProviderLabel(providerId) {
   const labels = {
-    semrush_browser: "SEM",
-    similarweb_browser: "SIM",
     similarweb_direct: "SW API",
     webspy: "WebSpy"
   };
@@ -77,20 +75,16 @@ function formatRemainingSeconds(timestamp) {
 }
 
 function formatProviderCooldowns(providerStatus) {
-  const sem = providerStatus?.semrush_browser;
-  const sim = providerStatus?.similarweb_browser;
   const similarweb = providerStatus?.similarweb_direct;
   const webspy = providerStatus?.webspy;
 
-  if (!sem && !sim && !similarweb && !webspy) {
+  if (!similarweb && !webspy) {
     return "-";
   }
 
   const parts = [
     `SW API ${formatRemainingSeconds(similarweb?.nextReadyAt)}`,
-    `SIM ${formatRemainingSeconds(sim?.nextReadyAt)}`,
-    `WebSpy ${formatRemainingSeconds(webspy?.nextReadyAt)}`,
-    `SEM ${formatRemainingSeconds(sem?.nextReadyAt)}`
+    `WebSpy ${formatRemainingSeconds(webspy?.nextReadyAt)}`
   ];
   return parts.join(" | ");
 }
