@@ -3,3 +3,6 @@ dist
 data/backlink-helper/
 data/backlink-helper/**/*.lock.json
 data/backlink-helper/artifacts/**/*.png
+python-sim-backlinks/runtime/
+python-sim-backlinks/__pycache__/
+python-sim-backlinks/tests/__pycache__/
