@@ -7,8 +7,8 @@
 1. 通过 CDP 接管你已经打开并登录好的 Chrome
 2. 找到 `sim.3ue.com` 的反链列表页
 3. 新开一个工作页分页采集反链 URL
-4. 自动启动独立 Chrome profile 池访问 `https://data.similarweb.com/api/v1/data?domain=...`
-5. 失败写入缓存并延迟重试，最终从成功缓存导出 CSV
+4. 可选地自动启动独立 Chrome profile 池访问 `https://data.similarweb.com/api/v1/data?domain=...`
+5. 如果开启流量查询，失败会写入缓存并延迟重试，最终从成功缓存导出 CSV
 
 ## 安装
 
@@ -60,6 +60,19 @@ python3 main.py \
   --retry-max-delay-seconds 600
 ```
 
+如果你只想导出反链链接，不走后续 Similarweb 流量查询，可以直接加：
+
+```bash
+python3 main.py --cdp-url http://127.0.0.1:9223 --links-only
+```
+
+这个模式下：
+
+- 只导出 `hostname` 和 `source_url`
+- 不会启动数据浏览器池
+- 不会访问 `data.similarweb.com`
+- 不会进入流量重试队列
+
 默认缓存路径按当前 `sim.3ue.com` 源页面 URL 自动生成：
 
 ```text
@@ -102,6 +115,7 @@ GUI 里可以配置：
 - 连续失败换浏览器阈值
 - 单域名最大尝试次数
 - 缓存文件路径
+- 是否只导出反链链接并跳过流量查询
 - 是否忽略旧缓存重新开始
 
 ## Clash 自动切换节点
@@ -172,6 +186,14 @@ hostname,source_url,monthly_visits
 ```
 
 只保留 `monthly_visits > 100` 的记录。
+
+如果开启了 `--links-only` 或在 GUI 勾选了“Export backlinks only and skip Similarweb traffic lookup”，CSV 会改成：
+
+```text
+hostname,source_url
+```
+
+此时不会写入 `monthly_visits` 列，也不会过滤流量阈值。
 
 ## 已知边界
 
