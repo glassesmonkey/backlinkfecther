@@ -288,6 +288,7 @@ class NonRetryableTrafficError(RuntimeError):
 
 @dataclass(frozen=True)
 class TrafficRunConfig:
+    fetch_traffic: bool = True
     data_browser_count: int = DEFAULT_DATA_BROWSER_COUNT
     data_failure_threshold: int = DEFAULT_DATA_FAILURE_THRESHOLD
     max_traffic_attempts: int = DEFAULT_MAX_TRAFFIC_ATTEMPTS
@@ -376,9 +377,23 @@ def create_csv_text(records: list[ExportRecord]) -> str:
     return buffer.getvalue()
 
 
+def create_backlinks_csv_text(records: list[BacklinkRecord]) -> str:
+    buffer = StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["hostname", "source_url"])
+    for record in sorted(records, key=lambda item: item.hostname):
+        writer.writerow([record.hostname, record.source_url])
+    return buffer.getvalue()
+
+
 def write_csv(output_path: Path, records: list[ExportRecord]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(create_csv_text(records), encoding="utf-8")
+
+
+def write_backlinks_csv(output_path: Path, records: list[BacklinkRecord]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(create_backlinks_csv_text(records), encoding="utf-8")
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -786,6 +801,16 @@ def export_sim_backlinks(
                     backlinks = collect_backlinks(work_page, logger=logger)
                     cache.set_backlinks(backlinks)
                     logger(f"Collected {len(backlinks)} unique hostnames from sim.")
+
+                if not traffic_config.fetch_traffic:
+                    write_backlinks_csv(output_path, backlinks)
+                    logger("Skipped Similarweb traffic lookup. Exported backlinks only.")
+                    logger(f"Wrote CSV: {output_path}")
+                    return ExportResult(
+                        output_path=output_path,
+                        exported_count=len(backlinks),
+                        deferred_failed_count=0,
+                    )
 
                 clash_switcher = (
                     ClashNodeSwitcher(clash_config, logger=logger)

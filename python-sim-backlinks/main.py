@@ -32,6 +32,11 @@ def parse_args() -> argparse.Namespace:
         help="Open a small graphical UI for configuring CDP and Clash options.",
     )
     parser.add_argument(
+        "--links-only",
+        action="store_true",
+        help="Export only hostname/source_url rows and skip the Similarweb traffic lookup stage.",
+    )
+    parser.add_argument(
         "--enable-clash",
         action="store_true",
         help="Switch to the next Clash node and retry when a Similarweb request fails.",
@@ -119,6 +124,7 @@ def main() -> int:
         exclude_keywords=parse_exclude_keywords(args.clash_exclude_keywords),
     )
     traffic_config = TrafficRunConfig(
+        fetch_traffic=not args.links_only,
         data_browser_count=args.data_browser_count,
         data_failure_threshold=args.data_failure_threshold,
         max_traffic_attempts=args.max_traffic_attempts,

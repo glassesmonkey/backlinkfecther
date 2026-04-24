@@ -21,9 +21,11 @@ from sim_exporter import (
     _is_transient_page_evaluate_error,
     calculate_retry_delay_seconds,
     click_next_backlinks_page,
+    create_backlinks_csv_text,
     collect_traffic_records,
     create_csv_text,
     dedupe_backlink_urls,
+    export_sim_backlinks,
     is_retryable_traffic_error,
     parse_monthly_visits,
 )
@@ -87,6 +89,21 @@ class CsvGenerationTests(unittest.TestCase):
             csv_text,
             'hostname,source_url,monthly_visits\n'
             'example.com,"https://example.com/a,""quoted""",101\n',
+        )
+
+    def test_writes_backlinks_only_csv(self) -> None:
+        csv_text = create_backlinks_csv_text(
+            [
+                BacklinkRecord("b.example.com", "https://b.example.com/post"),
+                BacklinkRecord("a.example.com", 'https://a.example.com/a,"quoted"'),
+            ]
+        )
+
+        self.assertEqual(
+            csv_text,
+            'hostname,source_url\n'
+            'a.example.com,"https://a.example.com/a,""quoted"""\n'
+            'b.example.com,https://b.example.com/post\n',
         )
 
 
@@ -471,6 +488,70 @@ class TrafficCollectionTests(unittest.TestCase):
             self.assertEqual(cache.state["queue"], [])
             self.assertEqual(cache.state["host_states"]["bad.example"]["attempts"], 1)
             self.assertEqual(cache.state["host_states"]["bad.example"]["status"], "deferred_failed")
+
+
+class ExportFlowTests(unittest.TestCase):
+    def test_links_only_mode_skips_traffic_lookup(self) -> None:
+        class FakeSourcePage:
+            def __init__(self) -> None:
+                self.url = "https://sim.3ue.com/#/digitalsuite/acquisition/backlinks/table/x"
+
+        class FakeWorkPage:
+            def goto(self, url: str, wait_until: str, timeout: int) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        class FakeSourceContext:
+            def __init__(self) -> None:
+                self.pages = [FakeSourcePage()]
+
+            def new_page(self) -> FakeWorkPage:
+                return FakeWorkPage()
+
+        class FakeBrowser:
+            def __init__(self) -> None:
+                self.contexts = [FakeSourceContext()]
+
+            def close(self) -> None:
+                return None
+
+        class FakeChromium:
+            def connect_over_cdp(self, cdp_url: str) -> FakeBrowser:
+                return FakeBrowser()
+
+        class FakePlaywright:
+            def __init__(self) -> None:
+                self.chromium = FakeChromium()
+
+        class FakeSyncPlaywright:
+            def __enter__(self) -> FakePlaywright:
+                return FakePlaywright()
+
+            def __exit__(self, exc_type, exc, traceback) -> None:  # type: ignore[no-untyped-def]
+                return None
+
+        backlinks = [BacklinkRecord("example.com", "https://example.com/a")]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "links-only.csv"
+            with patch("playwright.sync_api.sync_playwright", return_value=FakeSyncPlaywright()):
+                with patch("sim_exporter.collect_backlinks", return_value=backlinks):
+                    with patch("sim_exporter.collect_traffic_records") as collect_traffic:
+                        result = export_sim_backlinks(
+                            cdp_url="http://127.0.0.1:9223",
+                            output_path=output_path,
+                            traffic_config=TrafficRunConfig(fetch_traffic=False),
+                            logger=lambda message: None,
+                        )
+                        collect_traffic.assert_not_called()
+                        self.assertEqual(result.exported_count, 1)
+                        self.assertEqual(result.deferred_failed_count, 0)
+                        self.assertEqual(
+                            output_path.read_text(encoding="utf-8"),
+                            "hostname,source_url\nexample.com,https://example.com/a\n",
+                        )
 
 
 if __name__ == "__main__":

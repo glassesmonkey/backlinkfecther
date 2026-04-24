@@ -43,6 +43,7 @@ class SimBacklinksApp:
         self.data_failure_threshold_var = tk.StringVar(value="3")
         self.max_traffic_attempts_var = tk.StringVar(value="8")
         self.cache_path_var = tk.StringVar(value="")
+        self.links_only_var = tk.BooleanVar(value=False)
         self.fresh_var = tk.BooleanVar(value=False)
         self.wait_for_delayed_retries_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Ready")
@@ -80,19 +81,26 @@ class SimBacklinksApp:
         )
         clash_check.grid(row=10, column=1, sticky="w", pady=(8, 0))
 
+        links_only_check = ttk.Checkbutton(
+            form,
+            text="Export backlinks only and skip Similarweb traffic lookup",
+            variable=self.links_only_var,
+        )
+        links_only_check.grid(row=11, column=1, sticky="w", pady=(8, 0))
+
         fresh_check = ttk.Checkbutton(
             form,
             text="Ignore existing cache and start fresh",
             variable=self.fresh_var,
         )
-        fresh_check.grid(row=11, column=1, sticky="w", pady=(8, 0))
+        fresh_check.grid(row=12, column=1, sticky="w", pady=(8, 0))
 
         wait_check = ttk.Checkbutton(
             form,
             text="Keep running while waiting for delayed retries",
             variable=self.wait_for_delayed_retries_var,
         )
-        wait_check.grid(row=12, column=1, sticky="w", pady=(8, 0))
+        wait_check.grid(row=13, column=1, sticky="w", pady=(8, 0))
 
         actions = ttk.Frame(outer)
         actions.pack(fill=tk.X, pady=(12, 8))
@@ -209,6 +217,7 @@ class SimBacklinksApp:
                 output_path=output_path,
                 clash_config=self._build_clash_config(enabled=self.clash_enabled_var.get()),
                 traffic_config=TrafficRunConfig(
+                    fetch_traffic=not self.links_only_var.get(),
                     data_browser_count=self._read_positive_int(self.data_browser_count_var, "Data browser count"),
                     data_failure_threshold=self._read_positive_int(self.data_failure_threshold_var, "Failure threshold"),
                     max_traffic_attempts=self._read_positive_int(self.max_traffic_attempts_var, "Max traffic attempts"),
